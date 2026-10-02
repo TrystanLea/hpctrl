@@ -4,3 +4,4 @@ config/mqtt.json
 config/schedule.json
 config/sensors.json
 config/params.json
+config/house.json
