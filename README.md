@@ -120,6 +120,14 @@ Runs the controller without touching the serial port or relay and without publis
 
 The service keeps a copy of the last schedule, sensors and control parameters it received in `config/schedule.json`, `config/sensors.json` and `config/params.json`, so it starts with them even if MQTT is down.
 
+## House model
+
+    python3 tools/fit_house.py --days 60
+
+Reads feed history straight from the PHPFina files and fits a simple model of the house: heat loss (W/K) and gains from daily averages, emitter output against mean water temperature, flow capacity, and thermal mass from how fast the room cools with the heat pump off. From these it prints a weather compensation curve for a set point, and how far that curve is from the flow temperatures that actually ran. It warns when the data doesn't support a fit, e.g. too few cold days.
+
+Feeds come from the sensor mapping (room, outside, flow, return) plus `heatpump_heat` and `heatpump_dhw` (a 0/1 hot water flag, so hot water heat is left out) by name, or pass `--heat ID` etc. `--json` gives machine readable output. This is groundwork for a weather compensated flow mode.
+
 ## Schedule format
 
 The UI writes this for you; see [config/schedule.example.json](config/schedule.example.json). `start` is `HHMM`. The period in force is the last one whose start has passed, wrapping round from the previous day. A hot water run starts once a day within 5 minutes of its `start` and stops once the cylinder top reaches `T` and the bottom is within 3° of it.
