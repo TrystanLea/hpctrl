@@ -84,6 +84,10 @@ load_css("Modules/hpctrl/Views/hpctrl.css");
     <!-- Day profile -->
     <div class="hp-profile">
       <div class="hp-profile-plot" @pointermove="profile_hover" @pointerleave="hover = null">
+        <!-- Behind the set point bars -->
+        <svg class="hp-room-line" viewBox="0 0 1440 100" preserveAspectRatio="none" v-if="room_paths.length">
+          <path v-for="d in room_paths" :d="d" vector-effect="non-scaling-stroke"/>
+        </svg>
         <div v-for="seg in segments" class="hp-seg"
              :class="{ 'is-active': seg.index==active_index }"
              :style="{ left: seg.left+'%', width: seg.width+'%', height: seg.height+'%', '--seg': seg.color }"
@@ -91,9 +95,6 @@ load_css("Modules/hpctrl/Views/hpctrl.css");
              @click="focus_row(seg.index)">
           <span v-if="seg.width>7">{{ seg.set_point }}&deg;</span>
         </div>
-        <svg class="hp-room-line" viewBox="0 0 1440 100" preserveAspectRatio="none" v-if="room_paths.length">
-          <path v-for="d in room_paths" :d="d" vector-effect="non-scaling-stroke"/>
-        </svg>
         <div class="hp-now" :style="{ left: now_pct+'%' }"></div>
         <div v-if="hover" class="hp-hover" :style="{ left: hover.left+'%' }">
           <span class="hp-hover-dot" :style="{ bottom: hover.bottom+'%' }"></span>
