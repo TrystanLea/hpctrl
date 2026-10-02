@@ -164,6 +164,44 @@ load_css("Modules/hpctrl/Views/hpctrl.css");
       </div>
     </div>
 
+    <!-- Activity: status and events from the hpctrl service -->
+    <div class="app-card">
+      <div class="app-card-head">
+        <div class="nav nav-underline">
+          <span class="nav-link active"><i class="svg-icon-list"></i>Activity</span>
+        </div>
+        <div class="app-card-tools">
+          <span class="hp-badge is-auto" v-if="status_live && status.dry_run">Dry run</span>
+          <span class="app-status" :class="{ 'is-live': status_live && !status.dry_run }"><span class="app-status-dot"></span><span class="app-status-text">{{ service_text }}</span></span>
+        </div>
+      </div>
+      <div class="app-card-body">
+        <div class="hp-now-status" v-if="status_live">
+          <div class="hp-now-reason"><b>{{ status.label }}</b>{{ status.reason }}</div>
+          <div class="hp-now-stats" v-if="status.outputs">
+            <span>Pump <b>{{ status.outputs.power ? 'on' : 'off' }}</b></span>
+            <span>Flow target <b>{{ status.outputs.flowT }}&deg;</b></span>
+            <span>Valve <b>{{ status.outputs.valve ? 'hot water' : 'heating' }}</b></span>
+            <span v-if="status.ecodan && status.ecodan.freq !== undefined">Compressor <b>{{ status.ecodan.freq }} Hz</b></span>
+          </div>
+          <button v-if="waiting_for_inputs" class="btn btn-sm btn-primary hp-now-action" @click="open_settings"><i class="svg-icon-input"></i> Choose inputs</button>
+        </div>
+        <div class="hp-now-status is-offline" v-else>
+          {{ status ? 'No update from the hpctrl service for ' + ago(status_age) : 'The hpctrl service has not reported yet' }}
+        </div>
+
+        <div class="hp-events" v-if="events.length">
+          <div v-for="(e, index) in events_shown" :key="index" class="hp-event" :class="'is-' + e.type">
+            <span class="hp-event-time">{{ event_time(e.time) }}</span>
+            <span class="hp-event-text">{{ e.text }}</span>
+          </div>
+          <button v-if="events.length > 8" class="nav-link hp-events-more" @click="show_all_events = !show_all_events">
+            {{ show_all_events ? 'Show fewer' : 'Show ' + (events.length - 8) + ' more' }}
+          </button>
+        </div>
+      </div>
+    </div>
+
   </div>
 </div>
 
@@ -185,10 +223,10 @@ load_css("Modules/hpctrl/Views/hpctrl.css");
     <div class="hp-ready" :class="ready ? 'is-ready' : 'is-missing'">
       <span class="hp-state-icon"><i :class="ready ? 'svg-icon-check' : 'svg-icon-close'"></i></span>
       <div class="hp-ready-text">
-        <b>{{ ready ? 'Ready' : 'Choose a room temperature feed' }}</b>
-        <span>{{ feeds_connected }} of {{ feed_defs.length }} feeds connected</span>
+        <b>{{ ready ? 'Ready' : 'Choose the required feeds and inputs' }}</b>
+        <span>{{ ready_count }} of {{ ready_total }} connected</span>
       </div>
-      <div class="hp-ready-bar"><div :style="{ width: (100 * feeds_connected / feed_defs.length) + '%' }"></div></div>
+      <div class="hp-ready-bar"><div :style="{ width: (100 * ready_count / ready_total) + '%' }"></div></div>
     </div>
   </div>
 
@@ -218,6 +256,39 @@ load_css("Modules/hpctrl/Views/hpctrl.css");
         </div>
         <div class="hp-feed-live" v-else-if="row.state=='miss'">No feed found by name</div>
         <div class="hp-feed-live" v-else>Not shown</div>
+      </div>
+    </div>
+  </div>
+
+  <div class="app-section-label hp-settings-label">Control inputs</div>
+  <div class="hp-settings-note">Read by the hpctrl service from emoncms inputs. Shared by all users.</div>
+  <div class="app-card">
+    <div v-if="!inputs_loaded" class="hp-feed"><span class="hp-feed-desc">Loading inputs&hellip;</span></div>
+    <div v-else v-for="row in input_rows" :key="row.def.key" class="hp-feed" :class="'is-' + row.state">
+      <span class="hp-state-icon"><i :class="row.def.icon"></i></span>
+      <div class="hp-feed-text">
+        <div class="hp-feed-name">{{ row.def.label }}
+          <span v-if="row.state=='miss'" class="hp-badge is-miss">Required</span>
+          <span v-else-if="row.state=='stale'" class="hp-badge is-stale">Stale</span>
+        </div>
+        <div class="hp-feed-desc">{{ row.def.description }}</div>
+      </div>
+      <div class="hp-feed-pick">
+        <select class="form-select form-select-sm" :value="row.choice" @change="set_input(row.def.key, $event.target.value)">
+          <option value="" disabled>Choose input&hellip;</option>
+          <option value="0" v-if="!row.def.required">Not used</option>
+          <option v-if="row.state=='miss' && row.choice" :value="row.choice" disabled>Input {{ row.choice }} (not found)</option>
+          <optgroup v-for="group in input_groups" :label="group.node">
+            <option v-for="i in group.inputs" :value="String(i.id)">{{ i.name }}</option>
+          </optgroup>
+        </select>
+        <div class="hp-feed-live" v-if="row.input">
+          <span class="hp-feed-node">{{ row.input.nodeid }}:{{ row.input.name }}</span>
+          <b>{{ input_value(row.input, row.def) }}</b>
+          <span :class="{ 'is-stale': row.state=='stale' }">{{ ago(now.getTime() / 1000 - row.input.time) }} ago</span>
+        </div>
+        <div class="hp-feed-live" v-else-if="row.state=='miss'">{{ row.choice ? 'Input ' + row.choice + ' not found' : 'Not set' }}</div>
+        <div class="hp-feed-live" v-else>Not used</div>
       </div>
     </div>
   </div>

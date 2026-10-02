@@ -1,342 +1,318 @@
-import time
-import json
+"""hpctrl service: schedule based control of an Ecodan heat pump.
+
+One process, one loop, every 10 seconds:
+  read control inputs (emoncms inputs in Redis)
+  run the controller (controller.py)
+  apply its outputs: CN105 power and flow temperature, 3-way valve relay
+  poll the Ecodan over CN105 and pass its readings to emonhub
+  publish the mode over MQTT and the status and events to Redis for the UI
+
+The schedule (hpctrl/config) and the input mapping (hpctrl/inputs) arrive as
+retained MQTT messages from the emoncms UI. The paho network thread hands
+them to the main loop. A local copy of each is kept in config/ for when MQTT
+is unavailable at start.
+
+Usage: python3 hpctrl.py [--dry-run]
+  --dry-run  no serial port, relay or MQTT publishing; decisions are logged
+             and shown in the UI. Safe to run while another controller is in
+             charge of the heat pump, e.g. to check the inputs before switching.
+"""
+import os
+import re
 import sys
-import redis
+import json
+import time
 import datetime
-import math
-import logging
+import argparse
+import traceback
 
-logging.basicConfig(filename='/var/log/emoncms/hpctrl.log', level=logging.ERROR, format='%(asctime)s %(message)s')
+import redis
+import paho.mqtt.client as mqtt
 
-frost_protection_temperature = 4.0
+from controller import Controller
+from inputs import Inputs
 
-# -----------------------------------------------------
-# Test configuration
-# -----------------------------------------------------
-config = {
-    "heating": [
-        {"start":"0000","set_point":5.0,"flowT":20.0,"mode":"min"}
-    ],
-    "dhw": [
-    
-    ]
+REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+CONFIG = os.path.join(REPO, "config")
+SCHEDULE_FILE = os.path.join(CONFIG, "schedule.json")
+INPUTS_FILE = os.path.join(CONFIG, "inputs.json")
+MQTT_FILE = os.path.join(CONFIG, "mqtt.json")
+EMONCMS_DIR = "/var/www/emoncms"
+
+STEP_INTERVAL = 10
+EVENTS_KEPT = 200
+VALVE_GPIO = 27
+
+# Heat pump off until a schedule arrives
+DEFAULT_SCHEDULE = {
+    "heating": [{"start": "0000", "set_point": 5.0, "flowT": 20.0, "mode": "min"}],
+    "dhw": []
 }
-# -----------------------------------------------------
-# Read in input values
-# -----------------------------------------------------
-# roomT default to 0 ensures heating stays on if room sensor fails
-hp = {'roomT':0,'flowT':False,'returnT':False,'cyl_top':0,'cyl_bot':0,'flowrate':False,'ambient':False,'extpipe':0}
+
 
 def log(message):
-    print(message)
-    logging.debug(message)
+    print(message, flush=True)
 
-# -----------------------------------------------------
-# Misc
-# -----------------------------------------------------
 
-def temp_to_dac(temp):
-    return round(819.2*((temp-7.5)/12.5))
-    
-def inputs_ready():
-    ready = True
-    for i in hp:
-        if hp[i] is False:
-            ready = False
-    if not ready:
-        log("waiting for inputs...")
-    return ready
-    
-# -----------------------------------------------------
-# Init
-# -----------------------------------------------------    
-log("--- hpctrl starting ---")
+def load_json(path, default):
+    try:
+        with open(path) as f:
+            return json.load(f)
+    except (OSError, ValueError):
+        return default
 
-r = redis.Redis()
 
-# -----------------------------------------------------
-# Loop
-# -----------------------------------------------------
-d = datetime.datetime.now()
-hour = d.hour
+def save_json(path, data):
+    try:
+        with open(path, "w") as f:
+            json.dump(data, f, indent=4)
+    except OSError as e:
+        log("Could not save %s: %s" % (path, e))
 
-mode = "heating"
-heating = False
-dhw_active_index = False
-state = 0
-last_flowT_target = 0
-time_since_heating_start = 0
-frost_protection_state = 0
-frost_protection_timer = 0
 
-# Cascade PI controller state
-pi_ITerm_outer = 0.0
-pi_last_time = time.time()
-pi_Kp_outer = 5.0
-pi_Ki_outer = 0.1
+def emoncms_redis_prefix():
+    """emoncms prefixes its Redis keys with [redis] prefix from settings.ini, else default-settings.ini."""
+    for name in ("settings.ini", "default-settings.ini"):
+        try:
+            with open(os.path.join(EMONCMS_DIR, name)) as f:
+                text = f.read()
+        except OSError:
+            continue
+        section = re.search(r"^\[redis\](.*?)(?=^\[|\Z)", text, re.M | re.S)
+        if section:
+            m = re.search(r"^\s*prefix\s*=\s*['\"]?([^'\"\n]*)['\"]?\s*$", section.group(1), re.M)
+            if m:
+                return m.group(1).strip()
+    return ""
 
-first_run = True
 
-dhw_complete = 0
+class Hardware:
+    """CN105 serial link and the 3-way valve relay. Errors are logged, not raised."""
 
-while 1: 
+    def __init__(self, dry_run):
+        self.dry_run = dry_run
+        self.applied = None
+        if dry_run:
+            return
+        import gpiozero
+        from cn105 import CN105, DEFAULT_PORT
+        self.valve = gpiozero.LED(VALVE_GPIO)
+        self.ecodan = CN105(DEFAULT_PORT, 2400)
+        self.ecodan.connect()
 
-    if math.floor(time.time()%10)==0:
+    def apply(self, out):
+        if out != self.applied:
+            log("Outputs: power %d, valve %s, flow %.1f°" % (out["power"], "DHW" if out["valve"] else "heating", out["flowT"]))
+        self.applied = dict(out)
+        if self.dry_run:
+            return
+        # CN105 commands are only sent when the value changes
+        self.ecodan.set_power(out["power"])
+        if out["valve"]:
+            self.valve.on()
+        else:
+            self.valve.off()
+        self.ecodan.set_temp(float(out["flowT"]))
 
-        x = r.get('hpctrl:config')
-        if x: 
-            config = json.loads(x)
-            log("config updated")
-            r.delete('hpctrl:config')
-    
-        x = r.get('hpmon5:cyl_bot')
-        if x: hp['cyl_bot'] = float(x.decode())
-            
-        x = r.get('hpmon5:cyl_top')
-        if x: hp['cyl_top'] = float(x.decode())
+    def poll(self):
+        if self.dry_run:
+            return {}
+        data = {}
+        for read in (self.ecodan.get_flow_return_dhw, self.ecodan.get_compressor_frequency,
+                     self.ecodan.get_zone_and_outside, self.ecodan.get_modes):
+            result = read()
+            if isinstance(result, dict):
+                data.update(result)
+        return data
 
-        x = r.get('axioma:axioma_FlowT')
-        if x: hp['flowT'] = float(x.decode())
-        
-        x = r.get('axioma:axioma_ReturnT')
-        if x: hp['returnT'] = float(x.decode())
 
-        x = r.get('axioma:axioma_FlowRate')
-        if x: hp['flowrate'] = float(x.decode())
+class Service:
 
-        x = r.get('hpmon5:ambient')
-        if x: hp['ambient'] = float(x.decode())
-        else: hp['ambient'] = 0.0                    # default frost protection on if no ambient temp
+    def __init__(self, dry_run):
+        self.dry_run = dry_run
+        self.started = int(time.time())
+        self.prefix = emoncms_redis_prefix()
+        self.redis = redis.Redis()
+        self.controller = Controller()
+        self.inputs = Inputs(self.redis, self.prefix)
+        self.hardware = Hardware(dry_run)
+        self.ecodan = {}
+        self.outputs = None
 
-        x = r.get('hpmon5:roomT')
-        if x: hp['roomT'] = float(x.decode())
-        else: hp['roomT'] = 10.0                     # default heating on if no room temp sensor
+        self.schedule = load_json(SCHEDULE_FILE, DEFAULT_SCHEDULE)
+        self.inputs.configure(load_json(INPUTS_FILE, {}))
+        self.pending = {}   # topic -> payload, from the MQTT thread
 
-        x = r.get('hpmon5:28-00000976299e')
-        if x: hp['extpipe'] = float(x.decode())
-        else: hp['extpipe'] = 0.0                      # default heating on if no room temp sensor
-        
-        last_hour = hour
-        d = datetime.datetime.now()
-        h = d.hour
-        m = d.minute
-        
-        # 1640 format
-        if h<10: h = "0"+str(h) 
-        else: h = str(h)
-        if m<10: m = "0"+str(m) 
-        else: m = str(m)
-        hm = h+m
-        
-        # Work out current heating setpoint
-        for period in config['heating']:
-            if int(hm)>=int(period['start']):
-                heating = period
-        
-        # Work out if we are at the start of a dhw run
-        for i in range(len(config['dhw'])):
-            run = config['dhw'][i]
-            if run['start']==hm and mode=="heating":
-                mode = "dhw"
-                dhw_active_index = i
-                log("Starting DHW cycle")
-        
-        if inputs_ready():
-            log("room:%.1f flow:%.3f return:%.3f flowrate:%.3f cylt:%.2f cylb:%.2f ambient:%.2f extpipe:%.2f" % (hp['roomT'],hp['flowT'],hp['returnT'],hp['flowrate'],hp['cyl_top'],hp['cyl_bot'],hp['ambient'],hp['extpipe']))
-            
-            if first_run:
-                first_run = False
-                if hp['flowrate']>0.0:
-                    state = 1
-                    log("Heatpump is ON, setting state = 1")
-                else:
-                    log("Heatpump is OFF, setting state = 0")
-                log("Heating set point: "+str(heating['set_point']))
-            
-            # -----------------------------------------------------
-            # HEATING MODE
-            # -----------------------------------------------------
-            if mode=="heating":
-                # Dont start heating for 10 minutes after finishing DHW
-                if time.time()-dhw_complete>60:
-                    # ----------------------------------------------------------------
-                    # Thermostat
-                    # ----------------------------------------------------------------
-                    if float(hp['roomT'])>=(float(heating['set_point'])+0.1) and state!=0:
-                        # turn heat off for 60 seconds then turn heat pump off completely
-                        state = 0
-                        r.set("hpctrl:temp",20.0)
-                        #if hp['ambient']>4.0:
-                        log("Turning heating off");
-                        time.sleep(60)
-                        r.set("hpctrl:r1",0)
-                        r.set("hpctrl:ac1",0)
-                        time.sleep(25)
-                        #else: 
-                        #log("Frost protection");
-                        # reset last_flowT_target
-                        last_flowT_target = 0
-                        frost_protection_state = 0
-                        frost_protection_timer = time.time()
+        self.event("service", "hpctrl started%s, %d heating periods, inputs: %s" % (
+            " (dry run)" if dry_run else "", len(self.schedule.get("heating", [])),
+            ", ".join(sorted(self.inputs.mapping)) or "none"))
+        log("emoncms redis prefix: '%s'" % self.prefix)
+        self.mqtt_start()
 
-                    if hp['roomT']<=(heating['set_point']-0.1) and state!=1:
-                        log("Turning heating on");
-                        state = 1
-                        r.set("hpctrl:r1",1)
-                        r.set("hpctrl:ac1",0)
-                        r.set("hpctrl:temp",20.0)
-                        time_since_heating_start = time.time()
-                        time.sleep(60)
+    # ------------------------------------------------------------------
+    # Events and status, read by the UI through hpctrl/status
+    # ------------------------------------------------------------------
+    def event(self, kind, text):
+        log("[%s] %s" % (kind, text))
+        try:
+            key = self.prefix + "hpctrl:events"
+            self.redis.lpush(key, json.dumps({"time": int(time.time()), "type": kind, "text": text}))
+            self.redis.ltrim(key, 0, EVENTS_KEPT - 1)
+        except redis.RedisError:
+            pass
 
-                    # frost protection
-                    if state==0:
-                        if hp['extpipe']>frost_protection_temperature:
-                            if frost_protection_state==1:
-                                log("Frost protection pump off")
-                                frost_protection_state=0
-                                frost_protection_timer=0
-                                r.set("hpctrl:r1",0)
-                        else:
-                            if frost_protection_state==0:
-                                # if off for 20 minutes
-                                if (time.time()-frost_protection_timer)>1800:
-                                    frost_protection_timer = time.time()
-                                    frost_protection_state=1
-                                    log("Frost protection pump on")
-                                    r.set("hpctrl:r1",1)
-                                    r.set("hpctrl:temp",14.0)
-                            if frost_protection_state==1:
-                                # if on for 10 minutes
-                                if (time.time()-frost_protection_timer)>600:
-                                    frost_protection_timer = time.time()
-                                    frost_protection_state=0
-                                    log("Frost protection pump off")
-                                    r.set("hpctrl:r1",0)
-                                    r.set("hpctrl:temp",14.0)
-                    # ----------------------------------------------------------------
-                    # Heating flow temperature control
-                    # ----------------------------------------------------------------         
-                    if state==1:
-                        
-                        if heating['mode']=="min":
-                            rT1 = 24.0
-                            dt1 = 2.8
-                            rT2 = 28.5
-                            dt2 = 2.5
+    def drain(self, source):
+        for kind, text in source.events:
+            self.event(kind, text)
+        source.events.clear()
 
-                            m = (dt2-dt1)/(rT2-rT1)
-                            c = dt1-(m*rT1)
-                            dt = (m*hp['returnT'])+c
-                        
-                            flowT_target = hp['returnT']+dt
-                            
-                            # Do not allow flowT_target to decrease during heating cycle
-                            # this is to avoid a defrost reducing the setpoint
-                            if (time.time()-time_since_heating_start)<300:
-                                last_flowT_target = flowT_target
-                            else:
-                                if flowT_target<last_flowT_target:
-                                    flowT_target = last_flowT_target
-                                else:
-                                    last_flowT_target = flowT_target
+    def write_status(self, t):
+        status = self.controller.status(t)
+        status.update({
+            "time": int(t),
+            "started": self.started,
+            "dry_run": self.dry_run,
+            "mqtt": self.mqtt_connected,
+            "inputs": self.inputs.details,
+            "ecodan": self.ecodan,
+        })
+        self.redis.set(self.prefix + "hpctrl:status", json.dumps(status))
+        return status
 
-                            # if (time.time()-time_since_heating_start)>900:
-                            flowT_target = math.ceil(flowT_target*0.5)*2
+    # ------------------------------------------------------------------
+    # MQTT
+    # ------------------------------------------------------------------
+    def mqtt_start(self):
+        settings = {"user": "emonpi", "password": "emonpimqtt2016", "host": "127.0.0.1", "port": 1883}
+        settings.update(load_json(MQTT_FILE, {}))
+        self.mqtt_connected = False
+        try:
+            self.mqttc = mqtt.Client(mqtt.CallbackAPIVersion.VERSION2)
+        except AttributeError:
+            self.mqttc = mqtt.Client()  # paho-mqtt < 2.0
+        self.mqttc.username_pw_set(settings["user"], settings["password"])
+        self.mqttc.on_connect = self.on_connect
+        self.mqttc.on_disconnect = self.on_disconnect
+        self.mqttc.on_message = self.on_message
+        # connect_async + loop_start: paho keeps retrying in its own thread
+        self.mqttc.connect_async(settings["host"], int(settings["port"]), 60)
+        self.mqttc.loop_start()
 
-                            
-                            if flowT_target>heating['flowT']: flowT_target = heating['flowT']
-                        else:
-                            flowT_target = heating['flowT']
-                            """
-                            # Cascade PI: room temperature error -> flow temperature target
-                            pi_timestep = time.time() - pi_last_time
-                            pi_last_time = time.time()
+    # Callback signatures fit both paho-mqtt 1.x and the 2.x VERSION2 API
+    def on_connect(self, client, userdata, flags, rc, *args):
+        self.mqtt_connected = rc == 0
+        if rc == 0:
+            log("MQTT connected")
+            client.subscribe("hpctrl/config")
+            client.subscribe("hpctrl/inputs")
+        else:
+            log("MQTT connect failed: %s" % rc)
 
-                            cascade_flowT_min = 25
-                            ctrl_cascade_outer_max_flowT = 40
-                            pi_Kp_outer = 3.0
-                            pi_Ki_outer = 0.002
+    def on_disconnect(self, client, userdata, *args):
+        self.mqtt_connected = False
+        log("MQTT disconnected")
 
-                            error_outer = heating['set_point'] - hp['roomT']
-                            pi_ITerm_outer += error_outer * pi_timestep
+    def on_message(self, client, userdata, msg):
+        self.pending[msg.topic] = msg.payload
 
-                            # Clamp ITerm so flow temp target stays within [setpoint, max_flowT]
-                            if pi_Ki_outer > 0:
-                                max_ITerm_outer = (ctrl_cascade_outer_max_flowT - cascade_flowT_min) / pi_Ki_outer
-                                if pi_ITerm_outer > max_ITerm_outer:
-                                    pi_ITerm_outer = max_ITerm_outer
-                            if pi_ITerm_outer < 0:
-                                pi_ITerm_outer = 0
+    def handle_messages(self):
+        while self.pending:
+            topic, payload = self.pending.popitem()
+            try:
+                data = json.loads(payload)
+            except ValueError:
+                self.event("error", "Invalid JSON on %s" % topic)
+                continue
+            if topic == "hpctrl/config":
+                if isinstance(data, dict) and data.get("heating") and data != self.schedule:
+                    self.schedule = data
+                    save_json(SCHEDULE_FILE, data)
+                    self.event("config", "Schedule updated: %d heating periods, %d hot water runs" % (
+                        len(data["heating"]), len(data.get("dhw", []))))
+            elif topic == "hpctrl/inputs":
+                if isinstance(data, dict) and self.inputs.configure(data):
+                    save_json(INPUTS_FILE, self.inputs.mapping)
+                    self.event("config", "Inputs updated: %s" % (", ".join(sorted(self.inputs.mapping)) or "none"))
 
-                            cascade_flowT_target = (cascade_flowT_min
-                                + pi_Kp_outer * error_outer
-                                + pi_Ki_outer * pi_ITerm_outer)
+    def publish_mode(self, mode):
+        if self.dry_run or not self.mqtt_connected:
+            return
+        sh = 1 if mode == 1 else 0
+        dhw = 1 if mode == 2 else 0
+        for topic, value in (("mode", mode), ("mode_sh_elec", sh), ("mode_dhw_elec", dhw),
+                             ("mode_sh_heat", sh), ("mode_dhw_heat", dhw)):
+            self.mqttc.publish("emon/hpmon5/" + topic, value)
 
-                            # Clamp flow temp target to reasonable bounds
-                            if cascade_flowT_target < cascade_flowT_min:
-                                cascade_flowT_target = cascade_flowT_min
-                            if cascade_flowT_target > ctrl_cascade_outer_max_flowT:
-                                cascade_flowT_target = ctrl_cascade_outer_max_flowT
+    # ------------------------------------------------------------------
+    # Main loop
+    # ------------------------------------------------------------------
+    def step(self):
+        t = time.time()
+        self.handle_messages()
 
-                            flowT_target = cascade_flowT_target
-                            log("PI cascade flowT target: %.1f (error: %.2f, ITerm: %.2f)" % (flowT_target, error_outer, pi_ITerm_outer))
-                            """
+        values = self.inputs.read(t)
+        self.drain(self.inputs)
 
-                            
-                        log("SH flow target: %.1f" % flowT_target)
-                        r.set("hpctrl:temp",flowT_target)
-                        r.set("hpctrl:mode",1)
-                    else:
-                        r.set("hpctrl:mode",0)
-                    
-            else:
-                # -----------------------------------------------------
-                # DHW MODE
-                # -----------------------------------------------------
-                r.set("hpctrl:mode",2)
-                
-                run = config['dhw'][dhw_active_index]
-                
-                if hp['cyl_top']<run['T'] or hp['cyl_bot']<(run['T']-3.0):
-                
-                    if run['mode']=="min":
-                        flowT_target = hp['cyl_bot'] + 7.0
-                        log("DHW flow target: %.1f" % flowT_target)
-                        r.set("hpctrl:r1",1)
-                        r.set("hpctrl:ac1",1)
-                        r.set("hpctrl:temp",flowT_target)
-                        state = 1
-                        
-                    elif run['mode']=="max":
-                        flowT_target = run['T'] + 7.0
-                        if 'flowT' in run:
-                            flowT_target = run['flowT']
-                            
-                        log("DHW flow target: %.1f" % flowT_target)
-                        r.set("hpctrl:r1",1)
-                        r.set("hpctrl:ac1",1)
-                        r.set("hpctrl:temp",flowT_target)
-                        state = 1                    
-                else:
-                    log("DHW heat up complete")
-                    r.set("hpctrl:temp",20.0)                               # 1. Turn heat off
-                    time.sleep(20)
-                    r.set("hpctrl:r1",0)                                   # 2. Turn pump off
-                    time.sleep(10)
-                    r.set("hpctrl:ac1",0)                                    # 3. Turn DHW relay off
-                    time.sleep(10)
-                    state = 0
-                        
-                    # Switch mode back to heating
-                    mode = "heating"
-                    # reset last_flowT_target
-                    last_flowT_target = 0
-                    # set dhw_complete timeout
-                    dhw_complete = time.time()
-                    
-        time.sleep(2.0)
-    time.sleep(0.1)
+        outputs = self.controller.step(datetime.datetime.fromtimestamp(t), values, self.schedule)
+        self.drain(self.controller)
 
-# Close
-sys.exit()
+        if outputs:
+            try:
+                self.hardware.apply(outputs)
+            except Exception as e:
+                self.event("error", "CN105 write failed: %s" % e)
 
+        try:
+            self.ecodan = self.hardware.poll()
+            if self.ecodan and not self.dry_run:
+                self.redis.rpush("emonhub:sub", json.dumps(dict(self.ecodan, time=int(t), node="ecodan")))
+        except Exception as e:
+            log("CN105 read failed: %s" % e)
+
+        if outputs:
+            self.publish_mode(outputs["mode"])
+
+        status = self.write_status(t)
+        log("room:%s flow:%s return:%s flowrate:%s cylt:%s cylb:%s ambient:%s extpipe:%s | %s: %s" % (
+            tuple(fmt(values.get(k)) for k in ("room", "flow", "return", "flowrate", "cyl_top", "cyl_bot", "ambient", "extpipe"))
+            + (status["label"], status["reason"])))
+
+    def wait_for_schedule(self, timeout=20):
+        """Without a local copy, wait for the retained schedule rather than run on the default."""
+        if os.path.exists(SCHEDULE_FILE):
+            return
+        log("No local schedule, waiting for hpctrl/config")
+        end = time.time() + timeout
+        while time.time() < end and "hpctrl/config" not in self.pending:
+            time.sleep(0.5)
+        time.sleep(1)  # let hpctrl/inputs arrive too
+        if "hpctrl/config" not in self.pending:
+            self.event("config", "No schedule received, using the default (5° set point)")
+
+    def run(self):
+        self.wait_for_schedule()
+        while True:
+            start = time.time()
+            try:
+                self.step()
+            except redis.RedisError as e:
+                log("Redis error: %s" % e)
+            except Exception:
+                # A controller bug: log it and let systemd restart the service
+                self.event("error", "Service stopped: " + traceback.format_exc().strip().splitlines()[-1])
+                raise
+            time.sleep(max(1.0, STEP_INTERVAL - (time.time() - start)))
+
+
+def fmt(x):
+    return "--" if x is None else "%.2f" % x
+
+
+if __name__ == "__main__":
+    parser = argparse.ArgumentParser(description="hpctrl heat pump control service")
+    parser.add_argument("--dry-run", action="store_true", help="no serial, relay or MQTT publishing")
+    args = parser.parse_args()
+    try:
+        Service(args.dry_run).run()
+    except KeyboardInterrupt:
+        sys.exit(0)

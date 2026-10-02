@@ -475,3 +475,61 @@
     .hp-tick.is-warming,
     .is-heating .hp-dial-glow { animation: none; }
 }
+
+/* -- Activity: service status and events ------------------------------------ */
+
+.hp-now-status { padding-bottom: 12px; }
+.hp-now-reason { font-size: 14px; color: var(--bs-body-color); }
+.hp-now-reason b { margin-right: 8px; color: var(--bs-emphasis-color); }
+.hp-now-stats {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 4px 16px;
+    margin-top: 6px;
+    font-size: 12px;
+    color: var(--bs-secondary-color);
+}
+.hp-now-stats b { color: var(--bs-body-color); font-variant-numeric: tabular-nums; }
+.hp-now-action { margin-top: 10px; }
+.hp-now-status.is-offline { font-size: 13px; color: var(--bs-warning-text-emphasis); }
+
+.hp-events {
+    display: flex;
+    flex-direction: column;
+    padding-top: 10px;
+    border-top: 1px solid var(--bs-border-color);
+}
+.hp-event {
+    --event: var(--bs-secondary-color);
+    display: grid;
+    grid-template-columns: 64px minmax(0, 1fr);
+    gap: 10px;
+    padding: 4px 0;
+    font-size: 13px;
+    line-height: 18px;
+}
+.hp-event-time {
+    color: var(--bs-secondary-color);
+    font-variant-numeric: tabular-nums;
+    white-space: nowrap;
+}
+/* Colour bar by event type */
+.hp-event-text { padding-left: 10px; border-left: 2px solid var(--event); color: var(--bs-body-color); }
+.hp-event.is-heating { --event: var(--hp-heat); }
+.hp-event.is-dhw     { --event: var(--ec-energy-use); }
+.hp-event.is-frost   { --event: var(--hp-outside); }
+.hp-event.is-input   { --event: var(--bs-warning-text-emphasis); }
+.hp-event.is-error   { --event: var(--bs-danger-text-emphasis); }
+.hp-event.is-error .hp-event-text { color: var(--bs-danger-text-emphasis); }
+.hp-events-more {
+    align-self: flex-start;
+    margin-top: 6px;
+    padding: 0 !important;
+    border: 0;
+    background: none;
+    font-size: 13px;
+}
+
+.hp-badge.is-stale { background: var(--bs-warning-bg-subtle); color: var(--bs-warning-text-emphasis); }
+.is-stale .hp-state-icon { background: var(--bs-warning-bg-subtle); color: var(--bs-warning-text-emphasis); }
+.hp-settings-note { margin: -4px 4px 8px; font-size: 13px; color: var(--bs-secondary-color); }

@@ -59,6 +59,10 @@ class CN105:
         # for i in range(0,length+1):
         #   print(str(i)+" "+hex(data[i])+" "+str(data[i]))
         
+        # No reply or a partial frame (read timeout): data[4] is the payload length
+        if len(data) < 6 or len(data) < data[4] + 6:
+            return {}
+
         rtype = data[1]
         if rtype==0x61:
             print("ack")

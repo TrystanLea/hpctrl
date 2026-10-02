@@ -43,8 +43,9 @@ class HPCtrl
         return true;
     }
     
-    // UI settings: feed ids for live values and the dial range
-    private $setting_keys = array('room','flow','outside','elec','heat','dial_min','dial_max','dial_step');
+    // UI settings: feed ids for live values, the dial range, and in_* emoncms input ids read by the service
+    private $setting_keys = array('room','flow','outside','elec','heat','dial_min','dial_max','dial_step',
+        'in_room','in_flow','in_return','in_flowrate','in_cyl_top','in_cyl_bot','in_ambient','in_extpipe');
 
     public function set_settings($userid,$settings)
     {

@@ -9,6 +9,8 @@ StartLimitIntervalSec=5
 Type=simple
 ExecStart=/usr/bin/python3 SCRIPT_PATH
 User=pi
+# Log lines reach the journal as they happen
+Environment=PYTHONUNBUFFERED=1
 
 # Restart script if stopped, waiting 30s before restart
 Restart=always

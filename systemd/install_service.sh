@@ -1,6 +1,6 @@
 #!/bin/bash
 # Install (or reinstall) a systemd unit for one of the scripts in service/
-# Usage: ./systemd/install_service.sh hpctrl|hpctrl_io|hpctrl_mqtt
+# Usage: ./systemd/install_service.sh hpctrl
 
 DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" >/dev/null 2>&1 && pwd )"
 REPO="$( dirname "$DIR" )"

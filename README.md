@@ -9,46 +9,64 @@ Schedule based control of a 5kW Mitsubishi Ecodan via its CN105 port, running on
 - Scheduled domestic hot water (DHW) runs via a 3-way valve relay
 - Frost protection pump cycling based on external pipe temperature
 - emoncms web UI for the schedule, with live flow, outside, electric, heat and COP
+- Activity panel showing what the service is doing and why, with a log of recent events
+- Control inputs chosen from emoncms inputs in the UI, with stale value detection
 
 ## How it fits together
 
 ```
  emoncms UI (hpctrl-module)
-   │ set-config: saved to MySQL + published retained to MQTT hpctrl/config
+   │ set-config / set-settings: saved to MySQL, published retained to
+   │ MQTT hpctrl/config (schedule) and hpctrl/inputs (input ids)
    ▼
- hpctrl_mqtt.py ── MQTT hpctrl/config, room temp ──► redis hpctrl:config, hpmon5:roomT
-   ▲                                                      │
-   │ redis hpctrl:mode → MQTT emon/hpmon5/mode*           ▼
-   └──────────────────────────────────────────────── hpctrl.py  (control logic)
-                                                          │ redis hpctrl:r1 / ac1 / temp / mode
-                                                          ▼
-                                                     hpctrl_io.py ── CN105 serial ──► Ecodan
-                                                          │          GPIO 27 ──► 3-way valve
-                                                          └─ Ecodan readings ──► redis emonhub:sub
+ service/hpctrl.py ─── one process, every 10 s ───────────────────────────
+   │  inputs.py      read input:lastvalue:<id> from Redis (emoncms inputs)
+   │  controller.py  thermostat, flow target, hot water, frost protection
+   │  cn105.py       power + flow temperature to the Ecodan, poll its readings
+   │  GPIO 27        3-way valve: heating / hot water
+   ▼
+ Redis hpctrl:status + hpctrl:events ──► UI Activity panel (hpctrl/status)
+ MQTT emon/hpmon5/mode*               ──► emoncms (heating/hot water split)
+ Redis emonhub:sub                    ──► emonhub (Ecodan CN105 readings)
 ```
 
-The three Python services only talk to each other through Redis:
+The controller is pure logic with no I/O, so its behaviour is covered by tests that need no hardware:
 
-| Key | Written by | Read by | Meaning |
-|---|---|---|---|
-| `hpctrl:config` | hpctrl_mqtt | hpctrl | New schedule JSON, deleted once loaded |
-| `hpmon5:roomT` | hpctrl_mqtt | hpctrl | Room temperature (expires after 30 min) |
-| `hpmon5:cyl_top`, `hpmon5:cyl_bot`, `hpmon5:ambient`, `hpmon5:28-00000976299e` | emonhub Redis interfacer | hpctrl | Cylinder, ambient and external pipe temperatures |
-| `axioma:axioma_FlowT`, `_ReturnT`, `_FlowRate` | emonhub Redis interfacer (heat meter) | hpctrl | Flow, return and flow rate |
-| `hpctrl:r1` | hpctrl | hpctrl_io | Heat pump on (1) / off (0) |
-| `hpctrl:ac1` | hpctrl | hpctrl_io | 3-way valve: DHW (1) / heating (0) |
-| `hpctrl:temp` | hpctrl | hpctrl_io | Flow temperature setpoint sent over CN105 |
-| `hpctrl:mode` | hpctrl | hpctrl_mqtt | 0 off, 1 space heating, 2 DHW |
+    python3 -m unittest discover tests
+
+### Control inputs
+
+Chosen in the UI settings page (wrench icon) under Control inputs. A value older than 10 minutes (room: 30 minutes) counts as missing:
+
+| Input | Required | When missing |
+|---|---|---|
+| Room temperature | yes | assumes 10°, so heating stays on |
+| Flow, return temperature, flow rate | yes | control waits and outputs are held |
+| Cylinder top, bottom | for hot water | a hot water run stops, or is skipped |
+| External pipe | no | if chosen, assumed freezing (pump cycles); if not used, no frost protection |
+| Outside temperature | no | logged only |
+
+### Redis keys
+
+emoncms's Redis prefix (`[redis] prefix` in its settings) applies to the first three; the service reads it from `/var/www/emoncms`.
+
+| Key | Written by | Read by |
+|---|---|---|
+| `input:lastvalue:<id>` | emoncms | service, control inputs |
+| `hpctrl:status` | service | UI, current state, reason, outputs, input ages, Ecodan readings |
+| `hpctrl:events` | service | UI, last 200 events |
+| `emonhub:sub` | service | emonhub, Ecodan readings as node `ecodan` |
 
 ## Directory layout
 
 ```
 hpctrl-module/   emoncms web module, symlinked to /var/www/emoncms/Modules/hpctrl
-service/         the long-running services and the CN105 protocol library
+service/         hpctrl.py (the service), controller.py, inputs.py, cn105.py
+tests/           controller tests
 systemd/         unit template and install script
 config/          *.default / *.example files are tracked, local copies are gitignored
-tools/           CN105 debugging and bench scripts
-archive/         earlier versions of the controller, kept for reference
+tools/           CN105 debugging and bench scripts (stop the service first: one serial port)
+archive/         earlier versions, including the three-service setup this replaced
 docs/
 ```
 
@@ -60,22 +78,30 @@ Web module:
 
 Then run Admin > Update database in emoncms to create the `hpctrl` table.
 
-Local config:
+Local config, all optional:
 
     cp config/ui_settings.default.php config/ui_settings.php   # emoncms user ids allowed to use the UI
-    cp config/mqtt.example.json config/mqtt.json              # optional, only if not using emonSD MQTT defaults
+    cp config/mqtt.example.json config/mqtt.json              # only if not using emonSD MQTT defaults
 
-Services:
+Service:
 
-    ./systemd/install_service.sh hpctrl_io
     ./systemd/install_service.sh hpctrl
-    ./systemd/install_service.sh hpctrl_mqtt
+
+Then open the UI, settings, and choose the control inputs. Until they are chosen the service waits and leaves the heat pump as it is.
 
 Logs: `sudo journalctl -f -u hpctrl -o cat`
 
+### Dry run
+
+    python3 service/hpctrl.py --dry-run
+
+Runs the controller without touching the serial port or relay and without publishing to MQTT. Decisions are logged and shown in the UI Activity panel, marked Dry run. Useful for checking inputs and behaviour before handing over control.
+
+The service keeps a copy of the last schedule and inputs it received in `config/schedule.json` and `config/inputs.json`, so it starts with them even if MQTT is down.
+
 ## Schedule format
 
-The UI writes this for you; see [config/schedule.example.json](config/schedule.example.json). `start` is `HHMM`. The period in force is the last one whose start has passed. DHW runs start at exactly their `start` minute and stop once the cylinder reaches `T`.
+The UI writes this for you; see [config/schedule.example.json](config/schedule.example.json). `start` is `HHMM`. The period in force is the last one whose start has passed, wrapping round from the previous day. A hot water run starts once a day within 5 minutes of its `start` and stops once the cylinder top reaches `T` and the bottom is within 3° of it.
 
 ## CN105 serial port
 
