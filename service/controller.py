@@ -10,6 +10,7 @@ run.
 """
 import math
 
+# Tunable from the UI settings page. LIMITS bounds what the UI can set.
 PARAMS = {
     "hysteresis": 0.1,            # thermostat: on below set point - h, off above set point + h
     "room_fallback": 10.0,        # room temperature assumed when the room input is stale (heating on)
@@ -17,7 +18,10 @@ PARAMS = {
     "start_hold": 60,             # after turning on, hold the idle flow target this long
     "stop_delay": 60,             # at set point: idle flow target this long, then pump off
     "stop_hold": 25,              # then wait this long before acting again
-    "min_curve": (24.0, 2.8, 28.5, 2.5),  # Min mode: flow = return + dT, dT linear in return (rT1, dT1, rT2, dT2)
+    "min_rT1": 24.0,              # Min mode: flow = return + dT, dT linear in return
+    "min_dT1": 2.8,               #   through (min_rT1, min_dT1) and (min_rT2, min_dT2)
+    "min_rT2": 28.5,
+    "min_dT2": 2.5,
     "ratchet_after": 300,         # Min mode: flow target can't fall after this long (rides through defrosts)
     "frost_temperature": 4.0,     # external pipe temperature below which the pump is cycled
     "frost_off_interval": 1800,   # pump on after this long off
@@ -26,9 +30,22 @@ PARAMS = {
     "dhw_window": 300,            # a hot water run starts within this long of its start time, once a day
     "dhw_dT": 7.0,                # flow target above cylinder bottom (Min) or target (Max without flowT)
     "dhw_bottom_margin": 3.0,     # run until top >= T and bottom >= T - margin
-    "dhw_stop_steps": (20, 10, 10),  # idle flow -> pump off -> valve to heating -> done
     "dhw_heating_delay": 60,      # space heating waits this long after a hot water run
 }
+
+LIMITS = {
+    "hysteresis": (0.05, 1.0), "room_fallback": (5, 25), "idle_flowT": (15, 30),
+    "start_hold": (0, 600), "stop_delay": (0, 600), "stop_hold": (0, 600),
+    "min_rT1": (10, 50), "min_dT1": (0.5, 10), "min_rT2": (10, 50), "min_dT2": (0.5, 10),
+    "ratchet_after": (0, 3600),
+    "frost_temperature": (-5, 10), "frost_off_interval": (60, 14400),
+    "frost_on_duration": (60, 3600), "frost_flowT": (5, 30),
+    "dhw_window": (60, 3600), "dhw_dT": (2, 15), "dhw_bottom_margin": (0, 10),
+    "dhw_heating_delay": (0, 3600),
+}
+
+DHW_STOP_STEPS = (20, 10, 10)     # idle flow -> pump off -> valve to heating -> done
+DHW_BOOST_T = 45.0                # manual hot water run target when there is no scheduled run to copy
 
 REQUIRED = ("room", "flow", "return", "flowrate")
 MODE_OFF, MODE_HEATING, MODE_DHW = 0, 1, 2
@@ -62,9 +79,9 @@ class Controller:
 
     def __init__(self, params=None):
         self.p = dict(PARAMS)
-        if params:
-            self.p.update(params)
         self.events = []           # (kind, text), drained by the service
+        if params:
+            self.set_params(params)
 
         self.mode = "heating"      # or "dhw"
         self.state = 0             # 1 while the heat pump is heating
@@ -82,6 +99,35 @@ class Controller:
         self.dhw_run = None
         self.dhw_complete = 0
         self.dhw_done = set()      # (date, start minutes) of runs already started
+        self.dhw_request = None    # manual run waiting to start
+        self.dhw_cancel = False
+
+    def set_params(self, params):
+        """Defaults overridden by params. Unknown names and out of range values are rejected with an event.
+        Returns True if the values in use changed."""
+        new = dict(PARAMS)
+        for name, value in (params or {}).items():
+            value = number(value)
+            if name not in LIMITS or value is None:
+                self.event("error", "Ignored parameter %s" % name)
+            elif not LIMITS[name][0] <= value <= LIMITS[name][1]:
+                self.event("error", "Ignored %s = %g: outside %g to %g" % ((name, value) + LIMITS[name]))
+            else:
+                new[name] = value
+        if new["min_rT1"] == new["min_rT2"]:
+            self.event("error", "Ignored Min curve: the two return temperatures must differ")
+            for k in ("min_rT1", "min_dT1", "min_rT2", "min_dT2"):
+                new[k] = PARAMS[k]
+        changed = new != self.p
+        self.p = new
+        return changed
+
+    def request_dhw(self, run):
+        """Start a hot water run now, outside the schedule."""
+        self.dhw_request = run
+
+    def cancel_dhw(self):
+        self.dhw_cancel = True
 
     def event(self, kind, text):
         self.events.append((kind, text))
@@ -131,6 +177,9 @@ class Controller:
 
         if self.mode == "heating":
             self.dhw_start(now, hm, schedule)
+        self.manual_dhw(t)
+        if self.phase:
+            return self.current()
 
         if self.mode == "heating":
             self.heating(t)
@@ -164,11 +213,11 @@ class Controller:
             return False
         if name == "dhw_pump_off":
             self.set(power=0)
-            self.phase = ("dhw_valve_off", t + p["dhw_stop_steps"][1])
+            self.phase = ("dhw_valve_off", t + DHW_STOP_STEPS[1])
             return True
         if name == "dhw_valve_off":
             self.set(valve=0)
-            self.phase = ("dhw_done", t + p["dhw_stop_steps"][2])
+            self.phase = ("dhw_done", t + DHW_STOP_STEPS[2])
             return True
         if name == "dhw_done":
             self.state = 0
@@ -220,7 +269,8 @@ class Controller:
             return float(period["flowT"])
 
         ret = self.hp["return"]
-        rT1, dt1, rT2, dt2 = self.p["min_curve"]
+        p = self.p
+        rT1, dt1, rT2, dt2 = p["min_rT1"], p["min_dT1"], p["min_rT2"], p["min_dT2"]
         m = (dt2 - dt1) / (rT2 - rT1)
         c = dt1 - m * rT1
         target = ret + m * ret + c
@@ -282,6 +332,25 @@ class Controller:
                 self.event("dhw", "Hot water run started, target %.1f°" % float(run["T"]))
                 return
 
+    def manual_dhw(self, t):
+        """Requests from the UI, handled once any start or stop sequence has finished."""
+        if self.dhw_cancel:
+            self.dhw_cancel = False
+            self.dhw_request = None
+            if self.mode == "dhw" and not self.phase:
+                self.event("dhw", "Hot water run stopped manually")
+                self.dhw_stop(t)
+        if self.dhw_request and self.mode == "dhw":
+            self.dhw_request = None  # already running
+        if self.dhw_request and self.mode == "heating":
+            run, self.dhw_request = self.dhw_request, None
+            if "cyl_top" not in self.hp or "cyl_bot" not in self.hp:
+                self.event("dhw", "Hot water run skipped: cylinder inputs not configured")
+                return
+            self.mode = "dhw"
+            self.dhw_run = run
+            self.event("dhw", "Hot water run started manually, target %.1f°" % float(run["T"]))
+
     def dhw(self, t):
         p, hp, run = self.p, self.hp, self.dhw_run
         self.set(mode=MODE_DHW)
@@ -306,7 +375,7 @@ class Controller:
 
     def dhw_stop(self, t):
         self.set(flowT=self.p["idle_flowT"])
-        self.phase = ("dhw_pump_off", t + self.p["dhw_stop_steps"][0])
+        self.phase = ("dhw_pump_off", t + DHW_STOP_STEPS[0])
 
     # ------------------------------------------------------------------
     # Status for the UI
@@ -352,6 +421,9 @@ class Controller:
             "outputs": self.outputs,
             "period": self.period,
             "dhw_run": self.dhw_run,
+            "params": self.p,
+            "param_defaults": PARAMS,
+            "param_limits": LIMITS,
         }
 
 

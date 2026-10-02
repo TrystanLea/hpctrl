@@ -6,11 +6,13 @@ One process, one loop, every 10 seconds:
   apply its outputs: CN105 power and flow temperature, 3-way valve relay
   poll the Ecodan over CN105 and pass its readings to emonhub
   publish the mode over MQTT and the status and events to Redis for the UI
+  pass the controller's targets to emonhub as node hpctrl, for graphing
 
-The schedule (hpctrl/config) and the input mapping (hpctrl/inputs) arrive as
-retained MQTT messages from the emoncms UI. The paho network thread hands
-them to the main loop. A local copy of each is kept in config/ for when MQTT
-is unavailable at start.
+The schedule (hpctrl/config), input mapping (hpctrl/inputs) and control
+parameters (hpctrl/params) arrive as retained MQTT messages from the emoncms
+UI, and manual commands as hpctrl/command. The paho network thread hands them
+to the main loop. A local copy of each retained message is kept in config/ for
+when MQTT is unavailable at start.
 
 Usage: python3 hpctrl.py [--dry-run]
   --dry-run  no serial port, relay or MQTT publishing; decisions are logged
@@ -29,19 +31,20 @@ import traceback
 import redis
 import paho.mqtt.client as mqtt
 
-from controller import Controller
+from controller import Controller, DHW_BOOST_T
 from inputs import Inputs
+from hardware import Hardware
 
 REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 CONFIG = os.path.join(REPO, "config")
 SCHEDULE_FILE = os.path.join(CONFIG, "schedule.json")
 INPUTS_FILE = os.path.join(CONFIG, "inputs.json")
+PARAMS_FILE = os.path.join(CONFIG, "params.json")
 MQTT_FILE = os.path.join(CONFIG, "mqtt.json")
 EMONCMS_DIR = "/var/www/emoncms"
 
 STEP_INTERVAL = 10
 EVENTS_KEPT = 200
-VALVE_GPIO = 27
 
 # Heat pump off until a schedule arrives
 DEFAULT_SCHEDULE = {
@@ -86,46 +89,6 @@ def emoncms_redis_prefix():
     return ""
 
 
-class Hardware:
-    """CN105 serial link and the 3-way valve relay. Errors are logged, not raised."""
-
-    def __init__(self, dry_run):
-        self.dry_run = dry_run
-        self.applied = None
-        if dry_run:
-            return
-        import gpiozero
-        from cn105 import CN105, DEFAULT_PORT
-        self.valve = gpiozero.LED(VALVE_GPIO)
-        self.ecodan = CN105(DEFAULT_PORT, 2400)
-        self.ecodan.connect()
-
-    def apply(self, out):
-        if out != self.applied:
-            log("Outputs: power %d, valve %s, flow %.1f°" % (out["power"], "DHW" if out["valve"] else "heating", out["flowT"]))
-        self.applied = dict(out)
-        if self.dry_run:
-            return
-        # CN105 commands are only sent when the value changes
-        self.ecodan.set_power(out["power"])
-        if out["valve"]:
-            self.valve.on()
-        else:
-            self.valve.off()
-        self.ecodan.set_temp(float(out["flowT"]))
-
-    def poll(self):
-        if self.dry_run:
-            return {}
-        data = {}
-        for read in (self.ecodan.get_flow_return_dhw, self.ecodan.get_compressor_frequency,
-                     self.ecodan.get_zone_and_outside, self.ecodan.get_modes):
-            result = read()
-            if isinstance(result, dict):
-                data.update(result)
-        return data
-
-
 class Service:
 
     def __init__(self, dry_run):
@@ -134,6 +97,7 @@ class Service:
         self.prefix = emoncms_redis_prefix()
         self.redis = redis.Redis()
         self.controller = Controller()
+        self.controller_defaults = dict(self.controller.p)
         self.inputs = Inputs(self.redis, self.prefix)
         self.hardware = Hardware(dry_run)
         self.ecodan = {}
@@ -141,6 +105,7 @@ class Service:
 
         self.schedule = load_json(SCHEDULE_FILE, DEFAULT_SCHEDULE)
         self.inputs.configure(load_json(INPUTS_FILE, {}))
+        self.controller.set_params(load_json(PARAMS_FILE, {}))
         self.pending = {}   # topic -> payload, from the MQTT thread
 
         self.event("service", "hpctrl started%s, %d heating periods, inputs: %s" % (
@@ -175,6 +140,7 @@ class Service:
             "mqtt": self.mqtt_connected,
             "inputs": self.inputs.details,
             "ecodan": self.ecodan,
+            "verify": self.hardware.verifier.status(),
         })
         self.redis.set(self.prefix + "hpctrl:status", json.dumps(status))
         return status
@@ -203,8 +169,8 @@ class Service:
         self.mqtt_connected = rc == 0
         if rc == 0:
             log("MQTT connected")
-            client.subscribe("hpctrl/config")
-            client.subscribe("hpctrl/inputs")
+            for topic in ("hpctrl/config", "hpctrl/inputs", "hpctrl/params", "hpctrl/command"):
+                client.subscribe(topic)
         else:
             log("MQTT connect failed: %s" % rc)
 
@@ -233,6 +199,46 @@ class Service:
                 if isinstance(data, dict) and self.inputs.configure(data):
                     save_json(INPUTS_FILE, self.inputs.mapping)
                     self.event("config", "Inputs updated: %s" % (", ".join(sorted(self.inputs.mapping)) or "none"))
+            elif topic == "hpctrl/params":
+                if isinstance(data, dict) and self.controller.set_params(data):
+                    save_json(PARAMS_FILE, data)
+                    changed = sorted(k for k, v in self.controller.p.items() if v != self.controller_defaults[k])
+                    self.event("config", "Control parameters updated: %s" % (", ".join(changed) or "all defaults"))
+            elif topic == "hpctrl/command":
+                self.command(data)
+
+    def command(self, data):
+        """Manual commands from the UI. Not retained, and ignored if older than a minute."""
+        if not isinstance(data, dict) or time.time() - float(data.get("time", 0)) > 60:
+            return
+        if data.get("cmd") == "dhw_start":
+            # Copy the first scheduled run's target and mode, else a Min run to DHW_BOOST_T
+            runs = self.schedule.get("dhw", [])
+            run = dict(runs[0]) if runs else {"T": DHW_BOOST_T, "flowT": "auto", "mode": "min"}
+            run["start"] = "manual"
+            self.controller.request_dhw(run)
+        elif data.get("cmd") == "dhw_stop":
+            self.controller.cancel_dhw()
+
+    def publish_feeds(self, t, status):
+        """Controller targets to emonhub, which posts them as emoncms inputs on node hpctrl."""
+        if self.dry_run or not status["outputs"]:
+            return
+        out = status["outputs"]
+        period = status["period"] or {}
+        data = {
+            "time": int(t), "node": "hpctrl",
+            "set_point": float(period.get("set_point", 0)),
+            "flowT_target": out["flowT"],
+            "power": out["power"],
+            "valve": out["valve"],
+            "mode": out["mode"],
+            "heating": status["state"],
+            "frost": status["frost"],
+            "dhw_target": float(status["dhw_run"]["T"]) if status["dhw_run"] else 0,
+            "verified": 1 if self.hardware.verifier.ok() else 0,
+        }
+        self.redis.rpush("emonhub:sub", json.dumps(data))
 
     def publish_mode(self, mode):
         if self.dry_run or not self.mqtt_connected:
@@ -264,6 +270,7 @@ class Service:
 
         try:
             self.ecodan = self.hardware.poll()
+            self.drain(self.hardware.verifier)
             if self.ecodan and not self.dry_run:
                 self.redis.rpush("emonhub:sub", json.dumps(dict(self.ecodan, time=int(t), node="ecodan")))
         except Exception as e:
@@ -273,6 +280,7 @@ class Service:
             self.publish_mode(outputs["mode"])
 
         status = self.write_status(t)
+        self.publish_feeds(t, status)
         log("room:%s flow:%s return:%s flowrate:%s cylt:%s cylb:%s ambient:%s extpipe:%s | %s: %s" % (
             tuple(fmt(values.get(k)) for k in ("room", "flow", "return", "flowrate", "cyl_top", "cyl_bot", "ambient", "extpipe"))
             + (status["label"], status["reason"])))

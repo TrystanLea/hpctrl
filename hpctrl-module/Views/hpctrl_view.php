@@ -142,6 +142,12 @@ load_css("Modules/hpctrl/Views/hpctrl.css");
           <span class="nav-link active"><i class="svg-icon-shower"></i>Hot water</span>
         </div>
         <div class="app-card-tools nav">
+          <template v-if="status_live">
+            <button v-if="dhw_running" class="nav-link" title="Stop the hot water run" :disabled="!!command_pending" @click="command('dhw_stop')">
+              <i class="svg-icon-close"></i>{{ command_pending == 'dhw_stop' ? 'Stopping' : 'Stop' }}</button>
+            <button v-else class="nav-link" title="Start a hot water run now" :disabled="!!command_pending" @click="command('dhw_start')">
+              <i class="svg-icon-play"></i>{{ command_pending == 'dhw_start' ? 'Starting' : 'Now' }}</button>
+          </template>
           <button class="nav-link" title="Add run" @click="add_dhw"><i class="svg-icon-plus"></i>Add</button>
         </div>
       </div>
@@ -184,6 +190,7 @@ load_css("Modules/hpctrl/Views/hpctrl.css");
             <span>Valve <b>{{ status.outputs.valve ? 'hot water' : 'heating' }}</b></span>
             <span v-if="status.ecodan && status.ecodan.freq !== undefined">Compressor <b>{{ status.ecodan.freq }} Hz</b></span>
           </div>
+          <div v-for="issue in verify_issues" class="hp-now-warning">{{ issue }}</div>
           <button v-if="waiting_for_inputs" class="btn btn-sm btn-primary hp-now-action" @click="open_settings"><i class="svg-icon-input"></i> Choose inputs</button>
         </div>
         <div class="hp-now-status is-offline" v-else>
@@ -242,13 +249,8 @@ load_css("Modules/hpctrl/Views/hpctrl.css");
         <div class="hp-feed-desc">{{ row.def.description }}</div>
       </div>
       <div class="hp-feed-pick">
-        <select class="form-select form-select-sm" :value="row.choice" @change="set_feed(row.def.key, $event.target.value)">
-          <option value="auto">Auto ({{ row.def.names.join(', ') }})</option>
-          <option value="0" v-if="!row.def.required">Not used</option>
-          <optgroup v-for="group in feed_groups" :label="group.tag">
-            <option v-for="f in group.feeds" :value="String(f.id)">{{ f.name }}</option>
-          </optgroup>
-        </select>
+        <hp-picker :options="feed_options(row.def)" :value="row.choice" placeholder="Choose feed"
+                   @pick="set_feed(row.def.key, $event)"></hp-picker>
         <div class="hp-feed-live" v-if="row.feed">
           <span class="hp-feed-node">{{ row.feed.tag }}:{{ row.feed.name }}</span>
           <b>{{ feed_value(row.feed, row.def.unit) }}</b>
@@ -274,14 +276,8 @@ load_css("Modules/hpctrl/Views/hpctrl.css");
         <div class="hp-feed-desc">{{ row.def.description }}</div>
       </div>
       <div class="hp-feed-pick">
-        <select class="form-select form-select-sm" :value="row.choice" @change="set_input(row.def.key, $event.target.value)">
-          <option value="" disabled>Choose input&hellip;</option>
-          <option value="0" v-if="!row.def.required">Not used</option>
-          <option v-if="row.state=='miss' && row.choice" :value="row.choice" disabled>Input {{ row.choice }} (not found)</option>
-          <optgroup v-for="group in input_groups" :label="group.node">
-            <option v-for="i in group.inputs" :value="String(i.id)">{{ i.name }}</option>
-          </optgroup>
-        </select>
+        <hp-picker :options="input_options(row)" :value="row.choice" placeholder="Choose input"
+                   @pick="set_input(row.def.key, $event)"></hp-picker>
         <div class="hp-feed-live" v-if="row.input">
           <span class="hp-feed-node">{{ row.input.nodeid }}:{{ row.input.name }}</span>
           <b>{{ input_value(row.input, row.def) }}</b>
@@ -292,6 +288,51 @@ load_css("Modules/hpctrl/Views/hpctrl.css");
       </div>
     </div>
   </div>
+
+  <div class="app-section-label hp-settings-label hp-label-row">
+    <span>Control</span>
+    <button v-if="params_modified" class="nav-link hp-reset" @click="reset_params">Reset {{ params_modified }} to defaults</button>
+  </div>
+  <div class="hp-settings-note">Used by the hpctrl service. Shared by all users.</div>
+  <div v-if="!params_live" class="app-card"><div class="hp-feed"><span class="hp-feed-desc">The hpctrl service isn't running, so control settings can't be shown or changed.</span></div></div>
+  <template v-else>
+    <div v-for="group in param_groups" class="app-card hp-params">
+      <div class="hp-params-head">{{ group.label }}</div>
+      <div v-if="group.curve" class="hp-setting hp-setting-curve" :class="{ 'is-modified': ['min_rT1','min_dT1','min_rT2','min_dT2'].some(param_modified) }">
+        <div class="hp-feed-text">
+          <div class="hp-feed-name">Flow above return</div>
+          <div class="hp-feed-desc">Flow target = return + a dT that changes linearly with return, capped at the period's flow temperature</div>
+          <div class="hp-feed-desc hp-curve-preview" v-if="curve_preview">{{ curve_preview }}</div>
+        </div>
+        <div class="hp-curve">
+          <div class="input-group input-group-sm">
+            <span class="input-group-text">At</span>
+            <input type="number" step="0.5" class="form-control" :value="param_shown({ key: 'min_rT1' })" @change="set_param('min_rT1', $event.target.value)"/>
+            <span class="input-group-text">&deg; add</span>
+            <input type="number" step="0.1" class="form-control" :value="param_shown({ key: 'min_dT1' })" @change="set_param('min_dT1', $event.target.value)"/>
+            <span class="input-group-text">&deg;</span>
+          </div>
+          <div class="input-group input-group-sm">
+            <span class="input-group-text">At</span>
+            <input type="number" step="0.5" class="form-control" :value="param_shown({ key: 'min_rT2' })" @change="set_param('min_rT2', $event.target.value)"/>
+            <span class="input-group-text">&deg; add</span>
+            <input type="number" step="0.1" class="form-control" :value="param_shown({ key: 'min_dT2' })" @change="set_param('min_dT2', $event.target.value)"/>
+            <span class="input-group-text">&deg;</span>
+          </div>
+        </div>
+      </div>
+      <div v-for="def in group.params" class="hp-setting" :class="{ 'is-modified': param_modified(def.key) }">
+        <div class="hp-feed-text">
+          <div class="hp-feed-name">{{ def.label }}</div>
+          <div class="hp-feed-desc">{{ def.description }}<span v-if="param_modified(def.key)" class="hp-default"> (default {{ param_default(def) }})</span></div>
+        </div>
+        <div class="input-group input-group-sm hp-param">
+          <input type="number" :step="def.step" class="form-control" :value="param_shown(def)" @change="set_param(def.key, $event.target.value, def.scale)"/>
+          <span class="input-group-text">{{ def.unit }}</span>
+        </div>
+      </div>
+    </div>
+  </template>
 
   <div class="app-section-label hp-settings-label">Dial</div>
   <div class="app-card hp-dial-settings">

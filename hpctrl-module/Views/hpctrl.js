@@ -46,7 +46,144 @@ var INPUTS = [
 ];
 var INPUT_STALE = 600;
 
+// Control parameters, set in the service (service/controller.py PARAMS, LIMITS).
+// scale: shown in minutes, stored in seconds.
+var PARAM_GROUPS = [
+    { label: 'Thermostat', params: [
+        { key: 'hysteresis', label: 'Hysteresis', unit: '°', step: 0.05,
+          description: 'Heating starts below set point minus this, stops above set point plus this' },
+        { key: 'room_fallback', label: 'Stale room temperature', unit: '°', step: 0.5,
+          description: 'Assumed when the room input is stale. Below the set point keeps heating on' }
+    ]},
+    { label: 'Min mode flow', curve: true, params: [
+        { key: 'ratchet_after', label: 'Hold after', unit: 'min', scale: 60, step: 1,
+          description: 'From this long into a heating cycle the flow target can only rise, so defrosts don\'t pull it down' }
+    ]},
+    { label: 'Start and stop', params: [
+        { key: 'idle_flowT', label: 'Idle flow target', unit: '°', step: 0.5,
+          description: 'Flow target while starting and stopping' },
+        { key: 'start_hold', label: 'Start hold', unit: 's', step: 5,
+          description: 'Idle flow target for this long after the pump starts' },
+        { key: 'stop_delay', label: 'Stop delay', unit: 's', step: 5,
+          description: 'At set point: idle flow target for this long, then pump off' },
+        { key: 'stop_hold', label: 'Stop hold', unit: 's', step: 5,
+          description: 'Then wait this long before heating can start again' }
+    ]},
+    { label: 'Hot water', dhw: true, params: [
+        { key: 'dhw_dT', label: 'Flow above cylinder', unit: '°', step: 0.5,
+          description: 'Min mode flow target above cylinder bottom. Max mode without a flow temperature: above the target' },
+        { key: 'dhw_bottom_margin', label: 'Bottom margin', unit: '°', step: 0.5,
+          description: 'A run ends when the top reaches the target and the bottom is within this of it' },
+        { key: 'dhw_heating_delay', label: 'Heating pause', unit: 's', step: 10,
+          description: 'Space heating waits this long after a hot water run' },
+        { key: 'dhw_window', label: 'Start window', unit: 'min', scale: 60, step: 1,
+          description: 'A run starts if the service sees its start time within this window, once a day' }
+    ]},
+    { label: 'Frost protection', params: [
+        { key: 'frost_temperature', label: 'Pipe temperature', unit: '°', step: 0.5,
+          description: 'Pump cycles while the external pipe is below this and heating is off' },
+        { key: 'frost_off_interval', label: 'Off for', unit: 'min', scale: 60, step: 1,
+          description: 'Pump comes on after this long off' },
+        { key: 'frost_on_duration', label: 'On for', unit: 'min', scale: 60, step: 1,
+          description: 'and runs for this long' },
+        { key: 'frost_flowT', label: 'Flow target', unit: '°', step: 0.5,
+          description: 'Flow target while circulating' }
+    ]}
+];
+
 var DIAL_DEFAULTS = { dial_min: 5, dial_max: 25, dial_step: 0.1 };
+
+// Type-to-filter picker for feeds and inputs.
+// options: [{ value, label, group, detail }]; group is the node or tag, shown as group:label
+var HpPicker = {
+    props: { options: Array, value: String, placeholder: String },
+    emits: ['pick'],
+    data: function () {
+        return { open: false, query: '', cursor: 0 };
+    },
+    computed: {
+        selected: function () {
+            var value = this.value;
+            return this.options.find(function (o) { return o.value === value; }) || null;
+        },
+        filtered: function () {
+            var terms = this.query.toLowerCase().split(/\s+/).filter(Boolean);
+            return this.options.filter(function (o) {
+                var text = HpPicker.text(o).toLowerCase();
+                return terms.every(function (t) { return text.indexOf(t) >= 0; });
+            });
+        },
+        // Options with a header row at each change of group
+        rows: function () {
+            var rows = [], group = null;
+            this.filtered.forEach(function (o, index) {
+                if (o.group && o.group !== group) rows.push({ header: o.group });
+                group = o.group;
+                rows.push({ option: o, index: index });
+            });
+            return rows;
+        }
+    },
+    methods: {
+        show: function () {
+            var value = this.value;
+            this.open = true;
+            this.query = '';
+            this.cursor = Math.max(0, this.filtered.findIndex(function (o) { return o.value === value; }));
+            this.$nextTick(this.scroll);
+        },
+        hide: function () {
+            this.open = false;
+        },
+        choose: function (option) {
+            if (option.value !== this.value) this.$emit('pick', option.value);
+            this.open = false;
+            this.$refs.input.blur();
+        },
+        key: function (e) {
+            if (!this.open) return;
+            if (e.key == 'ArrowDown' || e.key == 'ArrowUp') {
+                e.preventDefault();
+                var n = this.filtered.length;
+                if (n) this.cursor = (this.cursor + (e.key == 'ArrowDown' ? 1 : n - 1)) % n;
+                this.$nextTick(this.scroll);
+            } else if (e.key == 'Enter') {
+                e.preventDefault();
+                if (this.filtered[this.cursor]) this.choose(this.filtered[this.cursor]);
+            } else if (e.key == 'Escape') {
+                this.$refs.input.blur();
+            }
+        },
+        scroll: function () {
+            var el = this.$refs.list && this.$refs.list.querySelector('.is-cursor');
+            if (el) el.scrollIntoView({ block: 'nearest' });
+        },
+        text: function (o) {
+            return HpPicker.text(o);
+        }
+    },
+    text: function (o) {
+        return o.group ? o.group + ':' + o.label : o.label;
+    },
+    template: `
+<div class="hp-picker" :class="{ 'is-open': open }">
+  <input ref="input" type="text" class="form-select form-select-sm" autocomplete="off" spellcheck="false"
+         :placeholder="open ? 'Type to filter' : placeholder"
+         :value="open ? query : (selected ? text(selected) : '')"
+         @focus="show" @blur="hide" @keydown="key" @input="query = $event.target.value; cursor = 0"/>
+  <div class="hp-picker-list" v-if="open" ref="list">
+    <template v-for="row in rows">
+      <div v-if="row.header" class="hp-picker-group">{{ row.header }}</div>
+      <div v-else class="hp-picker-option" :class="{ 'is-cursor': row.index == cursor, 'is-selected': row.option.value === value }"
+           @mousedown.prevent="choose(row.option)" @mousemove="cursor = row.index">
+        <span class="hp-picker-label">{{ row.option.label }}</span>
+        <span class="hp-picker-detail">{{ row.option.detail }}</span>
+      </div>
+    </template>
+    <div v-if="!filtered.length" class="hp-picker-empty">No match</div>
+  </div>
+</div>`
+};
 
 function default_config() {
     return {
@@ -87,6 +224,9 @@ function start_app(schedule) {
                 input_defs: INPUTS.filter(function (d) { return dhw_enable || !d.dhw; }),
                 inputs: [],
                 inputs_loaded: false,
+                param_groups: PARAM_GROUPS.filter(function (g) { return dhw_enable || !g.dhw; }),
+                param_edits: {},
+                command_pending: '',
                 status: null,
                 status_age: 0,
                 events: [],
@@ -184,6 +324,40 @@ function start_app(schedule) {
                 if (!this.status) return 'No service';
                 if (!this.status_live) return 'Offline';
                 return this.status.dry_run ? 'Dry run' : 'Running';
+            },
+            params_live: function () {
+                return this.status_live && !!this.status.params;
+            },
+            // Min mode flow target now, from the curve being edited and the return temperature the service sees
+            curve_preview: function () {
+                var ret = this.status && this.status.inputs && this.status.inputs['return'];
+                if (!this.params_live || !ret || ret.value === null) return '';
+                var rT1 = this.param('min_rT1'), dT1 = this.param('min_dT1'), rT2 = this.param('min_rT2'), dT2 = this.param('min_dT2');
+                if (rT1 == rT2) return '';
+                var dT = dT1 + (dT2 - dT1) * (ret.value - rT1) / (rT2 - rT1);
+                var flow = ret.value + dT;
+                return 'Return now ' + ret.value.toFixed(1) + '° + ' + dT.toFixed(1) + '° = ' + flow.toFixed(1) + '°, sent as ' + (Math.ceil(flow * 0.5) * 2) + '°';
+            },
+            params_modified: function () {
+                var self = this;
+                if (!this.params_live) return 0;
+                return Object.keys(this.status.param_defaults).filter(function (k) { return self.param_modified(k); }).length;
+            },
+            // Commands the Ecodan hasn't confirmed
+            verify_issues: function () {
+                var v = this.status_live && this.status.verify, out = [];
+                if (!v) return out;
+                var names = { power: 'pump', flowT: 'flow temperature' };
+                for (var field in v) {
+                    if (v[field].state == 'resending' || v[field].state == 'failed') {
+                        out.push('Ecodan ' + (names[field] || field) + ' is ' + v[field].reported + ', sent ' + v[field].sent +
+                                 (v[field].state == 'failed' ? ': not confirmed after resending' : ': resending'));
+                    }
+                }
+                return out;
+            },
+            dhw_running: function () {
+                return this.status_live && this.status.mode == 'dhw';
             },
             waiting_for_inputs: function () {
                 return this.status_live && this.status.label == 'Waiting';
@@ -493,6 +667,104 @@ function start_app(schedule) {
                 var f = this.resolve(FEEDS.find(function (d) { return d.key == key; }));
                 return (f && f.value !== null && !isNaN(f.value)) ? f.value * 1 : false;
             },
+            // Picker options
+            feed_options: function (def) {
+                var self = this;
+                var out = [{ value: 'auto', label: 'Auto (' + def.names.join(', ') + ')' }];
+                if (!def.required) out.push({ value: '0', label: 'Not used' });
+                this.feed_groups.forEach(function (group) {
+                    group.feeds.forEach(function (f) {
+                        out.push({ value: String(f.id), label: f.name, group: group.tag, detail: self.feed_value(f, def.unit) });
+                    });
+                });
+                return out;
+            },
+            input_options: function (row) {
+                var self = this;
+                var out = [];
+                if (!row.def.required) out.push({ value: '0', label: 'Not used' });
+                if (row.state == 'miss' && row.choice) out.push({ value: row.choice, label: 'Input ' + row.choice + ' (not found)' });
+                this.input_groups.forEach(function (group) {
+                    group.inputs.forEach(function (i) {
+                        out.push({ value: String(i.id), label: i.name, group: String(group.node), detail: self.input_value(i, row.def) });
+                    });
+                });
+                return out;
+            },
+
+            // Control parameters: shown from the service, edits held until it reports them
+            param: function (key) {
+                if (this.param_edits[key] !== undefined) return this.param_edits[key];
+                return this.status && this.status.params ? this.status.params[key] : undefined;
+            },
+            param_shown: function (def) {
+                var v = this.param(def.key);
+                return v === undefined ? '' : +(v / (def.scale || 1)).toFixed(2);
+            },
+            param_default: function (def) {
+                var d = this.status && this.status.param_defaults ? this.status.param_defaults[def.key] : undefined;
+                return d === undefined ? '' : +(d / (def.scale || 1)).toFixed(2) + (def.unit == '°' ? '°' : ' ' + def.unit);
+            },
+            param_modified: function (key) {
+                var d = this.status && this.status.param_defaults;
+                return !!d && this.param(key) !== undefined && Math.abs(this.param(key) - d[key]) > 1e-9;
+            },
+            set_param: function (key, shown, scale) {
+                var value = parseFloat(shown);
+                if (isNaN(value) || !this.params_live) return;
+                value = value * (scale || 1);
+                var limits = this.status.param_limits[key];
+                if (limits) value = this.clamp(value, limits[0], limits[1]);
+                this.param_edits[key] = value;
+                this.save_params();
+            },
+            reset_params: function () {
+                this.param_edits = {};
+                this.save_params(true);
+            },
+            // Only values that differ from the defaults are sent
+            save_params: function (reset) {
+                var self = this;
+                var params = {};
+                if (!reset) {
+                    Object.keys(this.status.param_defaults).forEach(function (k) {
+                        if (self.param_modified(k)) params[k] = self.param(k);
+                    });
+                } else {
+                    this.status.params = Object.assign({}, this.status.param_defaults);
+                }
+                this.settings_state = 'saving';
+                $.ajax({
+                    method: "POST", url: path + "hpctrl/set-params", dataType: 'json',
+                    data: { params: JSON.stringify(params) },
+                    success: function (result) {
+                        self.settings_state = (result && result.success) ? 'saved' : 'error';
+                    },
+                    error: function () { self.settings_state = 'error'; },
+                    complete: function () {
+                        clearTimeout(settings_timer);
+                        if (self.settings_state == 'saved') {
+                            settings_timer = setTimeout(function () { self.settings_state = ''; }, 2500);
+                        }
+                    }
+                });
+            },
+
+            // Manual hot water run
+            command: function (cmd) {
+                var self = this;
+                this.command_pending = cmd;
+                $.ajax({
+                    method: "POST", url: path + "hpctrl/command", dataType: 'json', data: { cmd: cmd },
+                    success: function (result) {
+                        if (!result || !result.success) self.command_pending = '';
+                    },
+                    error: function () { self.command_pending = ''; }
+                });
+                // Cleared when the service reports the change, or after 30 s
+                setTimeout(function () { if (self.command_pending == cmd) self.command_pending = ''; }, 30000);
+            },
+
             // Saved choice, else the input the service is using now
             input_choice: function (def) {
                 var choice = this.settings[def.key];
@@ -597,6 +869,14 @@ function start_app(schedule) {
                     if (!result || !result.success) return;
                     self.status = result.status;
                     self.status_age = result.status ? result.time - result.status.time : 0;
+                    if (result.status && result.status.params) {
+                        // Drop edits the service has taken up
+                        for (var key in self.param_edits) {
+                            if (Math.abs(result.status.params[key] - self.param_edits[key]) < 1e-9) delete self.param_edits[key];
+                        }
+                    }
+                    if (self.command_pending == 'dhw_start' && self.dhw_running) self.command_pending = '';
+                    if (self.command_pending == 'dhw_stop' && !self.dhw_running) self.command_pending = '';
                     self.events = (result.events || []).filter(function (e) { return e; });
                 }});
             },
@@ -621,5 +901,5 @@ function start_app(schedule) {
             this.update();
             setInterval(function () { self.update(); }, 10000);
         }
-    }).mount('#hpctrl');
+    }).component('hp-picker', HpPicker).mount('#hpctrl');
 }

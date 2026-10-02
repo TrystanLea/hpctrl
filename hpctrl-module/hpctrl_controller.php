@@ -12,8 +12,8 @@
 // no direct access
 defined('EMONCMS_EXEC') or die('Restricted access');
 
-// Retained, so the service gets the latest copy whenever it (re)connects
-function hpctrl_publish($topic, $payload)
+// Retained by default, so the service gets the latest copy whenever it (re)connects
+function hpctrl_publish($topic, $payload, $retain = true)
 {
     global $settings;
     if (!class_exists('Mosquitto\\Client')) return false;
@@ -21,7 +21,7 @@ function hpctrl_publish($topic, $payload)
         $client = new Mosquitto\Client();
         $client->setCredentials($settings['mqtt']['user'],$settings['mqtt']['password']);
         $client->connect($settings['mqtt']['host'], $settings['mqtt']['port'], 5);
-        $client->publish($topic, json_encode($payload), 0, true);
+        $client->publish($topic, json_encode($payload), 0, $retain);
     } catch (Exception $e) {
         return false;
     }
@@ -74,6 +74,32 @@ function hpctrl_controller()
         }
         if ($chosen && $mqtt_enable && !hpctrl_publish("hpctrl/inputs", (object) $inputs)) {
             return array("success"=>false, "message"=>"Saved, but not sent to the service");
+        }
+        return array("success"=>true);
+    }
+
+    // Control parameters for the service, which checks their ranges. Empty resets to defaults.
+    if ($route->action == 'set-params' && $session['write']) {
+        $route->format = "json";
+        $params = json_decode(post('params'));
+        if (!is_object($params)) return array("success"=>false, "message"=>"Invalid parameters");
+        $clean = array();
+        foreach ($params as $key=>$value) {
+            if (preg_match('/^[a-z0-9_]+$/',$key) && is_numeric($value)) $clean[$key] = $value + 0;
+        }
+        if (!$mqtt_enable || !hpctrl_publish("hpctrl/params", (object) $clean)) {
+            return array("success"=>false, "message"=>"Not sent to the service");
+        }
+        return array("success"=>true);
+    }
+
+    // Manual commands: not retained, and the service ignores them after a minute
+    if ($route->action == 'command' && $session['write']) {
+        $route->format = "json";
+        $cmd = post('cmd');
+        if (!in_array($cmd, array('dhw_start','dhw_stop'))) return array("success"=>false, "message"=>"Unknown command");
+        if (!$mqtt_enable || !hpctrl_publish("hpctrl/command", array("cmd"=>$cmd, "time"=>time()), false)) {
+            return array("success"=>false, "message"=>"Not sent to the service");
         }
         return array("success"=>true);
     }

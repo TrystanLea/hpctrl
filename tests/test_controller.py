@@ -230,6 +230,78 @@ class TestHotWater(unittest.TestCase):
         self.assertIn("Hot water run skipped: cylinder inputs not configured", sim.events())
 
 
+class TestManualHotWater(unittest.TestCase):
+
+    RUN = {"start": "manual", "T": 45.0, "flowT": "auto", "mode": "min"}
+
+    def test_start_and_stop(self):
+        sim = Sim(off(cyl_top=35.0, cyl_bot=30.0))
+        sim.step()
+        sim.c.request_dhw(self.RUN)
+        self.assertEqual(sim.step(), {"power": 1, "valve": 1, "flowT": 37.0, "mode": 2})
+        self.assertIn("Hot water run started manually, target 45.0°", sim.events())
+        sim.c.cancel_dhw()
+        out = sim.step()
+        self.assertEqual((out["power"], out["valve"], out["flowT"]), (1, 1, 20.0))  # idle flow, not overridden
+        sim.run(40)
+        self.assertEqual((sim.out["power"], sim.out["valve"]), (0, 0))
+        self.assertEqual(sim.c.mode, "heating")
+
+    def test_waits_for_heating_start_sequence(self):
+        sim = Sim(off(room=19.0, cyl_top=35.0, cyl_bot=30.0))
+        sim.step()                               # heating starting, 60 s hold
+        sim.c.request_dhw(self.RUN)
+        self.assertEqual(sim.step()["valve"], 0)
+        self.assertEqual(sim.run(60)["valve"], 1)
+
+    def test_request_during_run_is_dropped(self):
+        sim = Sim(off(cyl_top=35.0, cyl_bot=30.0))
+        sim.step()
+        sim.c.request_dhw(self.RUN)
+        sim.step()
+        sim.c.request_dhw(self.RUN)
+        sim.step(cyl_top=46.0, cyl_bot=44.0)    # complete
+        sim.run(200)
+        self.assertEqual(sim.c.mode, "heating")
+
+    def test_skipped_without_cylinder_inputs(self):
+        sim = Sim(off())
+        sim.step()
+        sim.c.request_dhw(self.RUN)
+        self.assertEqual(sim.step()["valve"], 0)
+        self.assertIn("Hot water run skipped: cylinder inputs not configured", sim.events())
+
+
+class TestParams(unittest.TestCase):
+
+    def test_hysteresis(self):
+        sim = Sim(off(room=19.7))
+        sim.c.set_params({"hysteresis": 0.5})
+        self.assertEqual(sim.step()["power"], 0)
+        self.assertEqual(sim.step(room=19.5)["power"], 1)
+
+    def test_min_curve(self):
+        sim = Sim(off(room=19.0, **{"return": 26.0}))
+        sim.c.set_params({"min_dT1": 5.0, "min_dT2": 5.0})
+        self.assertEqual(sim.run(80)["flowT"], 32)  # 26 + 5 = 31, rounded up to even
+
+    def test_out_of_range_and_unknown_rejected(self):
+        c = Controller()
+        self.assertFalse(c.set_params({"hysteresis": 5, "nope": 1, "frost_flowT": "x"}))
+        self.assertEqual(c.p["hysteresis"], 0.1)
+        self.assertEqual(len(c.events), 3)
+
+    def test_equal_curve_points_rejected(self):
+        c = Controller()
+        c.set_params({"min_rT1": 26, "min_rT2": 26, "min_dT1": 4})
+        self.assertEqual((c.p["min_rT1"], c.p["min_dT1"]), (24.0, 2.8))
+
+    def test_reset_to_defaults(self):
+        c = Controller({"hysteresis": 0.3})
+        self.assertTrue(c.set_params({}))
+        self.assertEqual(c.p["hysteresis"], 0.1)
+
+
 class TestSchedule(unittest.TestCase):
 
     def test_before_first_start_uses_last_period(self):

@@ -11,18 +11,24 @@ Schedule based control of a 5kW Mitsubishi Ecodan via its CN105 port, running on
 - emoncms web UI for the schedule, with live flow, outside, electric, heat and COP
 - Activity panel showing what the service is doing and why, with a log of recent events
 - Control inputs chosen from emoncms inputs in the UI, with stale value detection
+- Control parameters (thermostat hysteresis, Min mode curve, hot water, frost protection) tunable in the UI
+- Hot water run on demand from the UI
+- Commands checked against what the Ecodan reports back over CN105, and resent if lost
+- Controller targets logged to emoncms for graphing against what the heat pump actually did
 
 ## How it fits together
 
 ```
  emoncms UI (hpctrl-module)
-   │ set-config / set-settings: saved to MySQL, published retained to
-   │ MQTT hpctrl/config (schedule) and hpctrl/inputs (input ids)
+   │ published to MQTT, retained: hpctrl/config (schedule), hpctrl/inputs
+   │ (input ids), hpctrl/params (control parameters); not retained:
+   │ hpctrl/command (hot water now / stop)
    ▼
  service/hpctrl.py ─── one process, every 10 s ───────────────────────────
    │  inputs.py      read input:lastvalue:<id> from Redis (emoncms inputs)
    │  controller.py  thermostat, flow target, hot water, frost protection
-   │  cn105.py       power + flow temperature to the Ecodan, poll its readings
+   │  hardware.py    power + flow temperature to the Ecodan over CN105 (cn105.py),
+   │                 poll its readings, resend commands it hasn't taken up
    │  GPIO 27        3-way valve: heating / hot water
    ▼
  Redis hpctrl:status + hpctrl:events ──► UI Activity panel (hpctrl/status)
@@ -55,14 +61,26 @@ emoncms's Redis prefix (`[redis] prefix` in its settings) applies to the first t
 | `input:lastvalue:<id>` | emoncms | service, control inputs |
 | `hpctrl:status` | service | UI, current state, reason, outputs, input ages, Ecodan readings |
 | `hpctrl:events` | service | UI, last 200 events |
-| `emonhub:sub` | service | emonhub, Ecodan readings as node `ecodan` |
+| `emonhub:sub` | service | emonhub, Ecodan readings as node `ecodan` and controller targets as node `hpctrl` |
+
+### Feeds for tuning
+
+Node `hpctrl` appears in emoncms inputs with the controller's view of things every 10 s. Log the ones you want to feeds:
+
+| Input | |
+|---|---|
+| `set_point`, `flowT_target` | room set point and the flow temperature sent to the Ecodan |
+| `power`, `valve`, `mode` | pump on, valve to hot water, 0 off / 1 heating / 2 hot water |
+| `heating`, `frost` | heating cycle and frost protection active |
+| `dhw_target` | target of the hot water run in progress, else 0 |
+| `verified` | 0 while the Ecodan disagrees with a command sent |
 
 ## Directory layout
 
 ```
 hpctrl-module/   emoncms web module, symlinked to /var/www/emoncms/Modules/hpctrl
-service/         hpctrl.py (the service), controller.py, inputs.py, cn105.py
-tests/           controller tests
+service/         hpctrl.py (the service), controller.py, inputs.py, hardware.py, cn105.py
+tests/           controller and command verification tests
 systemd/         unit template and install script
 config/          *.default / *.example files are tracked, local copies are gitignored
 tools/           CN105 debugging and bench scripts (stop the service first: one serial port)
@@ -97,7 +115,7 @@ Logs: `sudo journalctl -f -u hpctrl -o cat`
 
 Runs the controller without touching the serial port or relay and without publishing to MQTT. Decisions are logged and shown in the UI Activity panel, marked Dry run. Useful for checking inputs and behaviour before handing over control.
 
-The service keeps a copy of the last schedule and inputs it received in `config/schedule.json` and `config/inputs.json`, so it starts with them even if MQTT is down.
+The service keeps a copy of the last schedule, inputs and control parameters it received in `config/schedule.json`, `config/inputs.json` and `config/params.json`, so it starts with them even if MQTT is down.
 
 ## Schedule format
 
