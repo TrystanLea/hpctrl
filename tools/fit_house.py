@@ -227,13 +227,19 @@ def analyse(data, start, bucket=BUCKET, dhw_flow=None):
         heat = sum(0 if is_dhw(i) else max(0, get("heat", i)) for i in ok) / len(ok)
         days.append((heat, sum(get("room", i) for i in ok) / len(ok), sum(get("outside", i) for i in ok) / len(ok)))
 
-    # Space heating samples for the emitters
+    # Steady space heating samples for the emitters: heating in this bucket and both neighbours,
+    # none of them hot water, and the mean water temperature moving less than 1° across them.
+    # Start ups, defrosts and cycling don't follow the emitters' steady state output.
     samples = []
     if "flow" in data and "return" in data:
-        for i in range(n):
+        def heating(i):
             vals = (get("heat", i), get("flow", i), get("return", i), get("room", i))
-            if None not in vals and not is_dhw(i):
-                samples.append(vals)
+            return None not in vals and vals[0] > 300 and not is_dhw(i)
+        for i in range(1, n - 1):
+            if heating(i - 1) and heating(i) and heating(i + 1):
+                mwt = lambda j: (get("flow", j) + get("return", j)) / 2  # noqa: E731
+                if abs(mwt(i + 1) - mwt(i - 1)) < 1.0:
+                    samples.append((get("heat", i), get("flow", i), get("return", i), get("room", i)))
 
     # Off periods of 3 h or more, hourly, for the thermal mass
     per_hour = 3600 // bucket
@@ -260,7 +266,7 @@ def analyse(data, start, bucket=BUCKET, dhw_flow=None):
     }
 
 
-def backtest(data, house, bucket=BUCKET):
+def backtest(data, house, bucket=BUCKET, dhw_flow=None):
     """Flow temperature the curve gives for each heating sample's room and outside, against what ran."""
     if not (house["heat_loss"] and house["emitters"]) or "flow" not in data:
         return None
@@ -270,6 +276,8 @@ def backtest(data, house, bucket=BUCKET):
         if None in (room, out, flow, heat) or heat < 300:
             continue
         if "dhw" in data and (data["dhw"][i] or 0) > 0.1:
+            continue
+        if "dhw" not in data and dhw_flow is not None and flow > dhw_flow:
             continue
         pred = flow_for(room, out, house)
         if pred:
@@ -407,14 +415,15 @@ def main():
     data = {role: read_feed(datadir, feedid, start, end) for role, feedid in feeds.items()}
     data = {role: v for role, v in data.items() if any(x is not None for x in v)}
     house = analyse(data, start, dhw_flow=args.dhw_flow)
-    test = backtest(data, house)
+    test = backtest(data, house, dhw_flow=args.dhw_flow)
 
     if args.json:
         print(json.dumps({"start": start, "end": end, "feeds": feeds, "setpoint": args.setpoint,
                           "backtest": test, "warnings": warnings(house), **house}, indent=2))
     else:
         if "dhw" not in feeds and args.dhw_flow is None:
-            print("Note: no hot water flag feed (--dhw ID or --dhw-flow), so hot water heat counts as space heating", file=sys.stderr)
+            print("Note: no hot water flag feed, so hot water heat counts as space heating. Pass --dhw ID (a 0/1 feed),\n"
+                  "or --dhw-flow 40 to treat flow above 40° as hot water", file=sys.stderr)
         print(report(house, {r: feeds[r] for r in data}, start, end, args.setpoint, test))
 
 
