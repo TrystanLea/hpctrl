@@ -1,6 +1,9 @@
-from cn105 import CN105
+import os
+import sys
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "service"))
+from cn105 import CN105, DEFAULT_PORT
 import time
-ecodan = CN105("/dev/ecodan", 2400)
+ecodan = CN105(DEFAULT_PORT, 2400)
 
 ecodan.connect()
 

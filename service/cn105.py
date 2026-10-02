@@ -1,13 +1,16 @@
 import serial
 import time
 
+# CP2102 USB-serial adapter wired to the Ecodan CN105 port
+DEFAULT_PORT = "/dev/serial/by-id/usb-Silicon_Labs_CP2102_USB_to_UART_Bridge_Controller_0001-if00-port0"
+
 class CN105:
     ser = False
     last_temp = -1
     last_power = -1
 
-    def __init__(self,port,baud,control_enabled=True):
-        self.ser = serial.Serial("/dev/serial/by-id/usb-Silicon_Labs_CP2102_USB_to_UART_Bridge_Controller_0001-if00-port0", 2400, 8, 'E', 1, 0.5)
+    def __init__(self,port=DEFAULT_PORT,baud=2400,control_enabled=True):
+        self.ser = serial.Serial(port, baud, 8, 'E', 1, 0.5)
         self.control_enabled = control_enabled
             
     def calc_checksum(self,frame):

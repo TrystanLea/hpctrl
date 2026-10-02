@@ -1,0 +1,11 @@
+{
+    "heating": [
+        {"start":"0000", "set_point":18.0, "flowT":34.0, "mode":"min"},
+        {"start":"0700", "set_point":20.0, "flowT":34.0, "mode":"min"},
+        {"start":"2200", "set_point":18.0, "flowT":34.0, "mode":"min"}
+    ],
+    "dhw": [
+        {"start":"0200", "T":42.0, "flowT":"auto", "mode":"min"},
+        {"start":"1400", "T":42.0, "flowT":"auto", "mode":"min"}
+    ]
+}

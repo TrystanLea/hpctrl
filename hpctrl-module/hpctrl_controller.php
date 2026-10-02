@@ -18,7 +18,7 @@ function hpctrl_controller()
 
     $result = false;
     
-    require_once "/opt/emoncms/modules/hpctrl/ui_settings.php";
+    require __DIR__."/hpctrl_ui_settings.php";
     
     if (!$session['write']) return false;
     if (!in_array($session['userid'],$hpctrl_users)) return false;

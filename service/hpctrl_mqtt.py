@@ -1,3 +1,4 @@
+import os
 import time
 import paho.mqtt.client as mqtt
 import json
@@ -14,13 +15,19 @@ logging.basicConfig(handlers=[
 r = redis.Redis()
 
 # ------------------------------------------------------
-# MQTT 
+# MQTT: emonSD defaults, override in config/mqtt.json
 # ------------------------------------------------------
-mqtt_user = "emonpi"
-mqtt_passwd = "emonpimqtt2016"
-mqtt_host = "127.0.0.1"
-mqtt_port = 1883
-mqtt_topic = "emon/#"
+mqtt_settings = {"user":"emonpi", "password":"emonpimqtt2016", "host":"127.0.0.1", "port":1883}
+
+mqtt_settings_file = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "config", "mqtt.json")
+if os.path.exists(mqtt_settings_file):
+    with open(mqtt_settings_file) as f:
+        mqtt_settings.update(json.load(f))
+
+mqtt_user = mqtt_settings["user"]
+mqtt_passwd = mqtt_settings["password"]
+mqtt_host = mqtt_settings["host"]
+mqtt_port = int(mqtt_settings["port"])
 
 mqtt_connected = 0
 
@@ -91,19 +98,6 @@ while True:
        
         time.sleep(2.0)
         
-    if mqtt_connected==1:
-        result = r.lpop("ecodan")
-        if result:
-            try:  
-                ecodan_data = json.loads(result)
-            except Exception as e:
-                logging.error(e)
-                
-            for key in ecodan_data:
-                try:  
-                    mqttc.publish("emon/ecodan/"+key,ecodan_data[key])
-                except Exception as e:
-                    logging.error(e)
     time.sleep(0.1)
     
     try:

@@ -3,12 +3,12 @@ import time
 import redis
 import serial
 import json
-from cn105 import CN105
+from cn105 import CN105, DEFAULT_PORT
 
 r = redis.Redis()
 r4 = gpiozero.LED(27)
 
-ecodan = CN105("/dev/serial/by-id/usb-Silicon_Labs_CP2102_USB_to_UART_Bridge_Controller_0001-if00-port0", 2400)
+ecodan = CN105(DEFAULT_PORT, 2400)
 ecodan.connect()
 
 lastupdate = 0
