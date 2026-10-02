@@ -13,7 +13,7 @@ import math
 # Tunable from the UI settings page. LIMITS bounds what the UI can set.
 PARAMS = {
     "hysteresis": 0.1,            # thermostat: on below set point - h, off above set point + h
-    "room_fallback": 10.0,        # room temperature assumed when the room input is stale (heating on)
+    "room_fallback": 10.0,        # room temperature assumed when the room sensor is stale (heating on)
     "idle_flowT": 20.0,           # flow target while starting and stopping
     "start_hold": 60,             # after turning on, hold the idle flow target this long
     "stop_delay": 60,             # at set point: idle flow target this long, then pump off
@@ -136,7 +136,7 @@ class Controller:
         self.outputs.update(kw)
 
     # ------------------------------------------------------------------
-    # inputs: {role: value}, None when stale, role absent when not configured
+    # inputs: sensor values {role: value}, None when stale, role absent when not configured
     # returns the outputs to apply, or None before the first decision
     # ------------------------------------------------------------------
     def step(self, now, inputs, schedule):
@@ -152,7 +152,7 @@ class Controller:
             if waiting:
                 self.event("input", "Waiting for " + ", ".join(waiting) + ", outputs held")
             elif self.waiting:
-                self.event("input", "Inputs available, control resumed")
+                self.event("input", "Sensors available, control resumed")
             self.waiting = waiting
         if waiting:
             return self.current()
@@ -289,7 +289,7 @@ class Controller:
     def frost(self, t):
         p = self.p
         if "extpipe" not in self.hp:
-            return  # no external pipe input configured: frost protection off
+            return  # no external pipe sensor configured: frost protection off
         ext = self.hp["extpipe"]
         if ext is None:
             ext = 0.0  # stale: assume freezing
@@ -325,7 +325,7 @@ class Controller:
             if 0 <= (hm - start) * 60 < self.p["dhw_window"] and key not in self.dhw_done:
                 self.dhw_done.add(key)
                 if "cyl_top" not in self.hp or "cyl_bot" not in self.hp:
-                    self.event("dhw", "Hot water run skipped: cylinder inputs not configured")
+                    self.event("dhw", "Hot water run skipped: cylinder sensors not configured")
                     continue
                 self.mode = "dhw"
                 self.dhw_run = run
@@ -345,7 +345,7 @@ class Controller:
         if self.dhw_request and self.mode == "heating":
             run, self.dhw_request = self.dhw_request, None
             if "cyl_top" not in self.hp or "cyl_bot" not in self.hp:
-                self.event("dhw", "Hot water run skipped: cylinder inputs not configured")
+                self.event("dhw", "Hot water run skipped: cylinder sensors not configured")
                 return
             self.mode = "dhw"
             self.dhw_run = run

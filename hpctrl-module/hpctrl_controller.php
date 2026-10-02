@@ -63,17 +63,17 @@ function hpctrl_controller()
         $hpctrl = new HPCtrl($mysqli);
         if (!$hpctrl->set_settings($session['userid'],$ui_settings)) return array("success"=>false);
 
-        // Control inputs, published only once this user has chosen some,
-        // so another user saving their dial settings can't clear them
-        $inputs = array();
-        $chosen = false;
-        foreach ($hpctrl->get_settings($session['userid']) as $key=>$value) {
-            if (strpos($key,'in_')!==0) continue;
-            $chosen = true;
-            if ($value>0) $inputs[substr($key,3)] = (int) $value;
-        }
-        if ($chosen && $mqtt_enable && !hpctrl_publish("hpctrl/inputs", (object) $inputs)) {
-            return array("success"=>false, "message"=>"Saved, but not sent to the service");
+        // Sensor feeds for the service, sent when the UI changes a sensor: setting key => service role
+        if (post('publish_sensors')) {
+            $roles = array('room'=>'room','flow'=>'flow','return'=>'return','flowrate'=>'flowrate',
+                'cyl_top'=>'cyl_top','cyl_bot'=>'cyl_bot','outside'=>'ambient','extpipe'=>'extpipe');
+            $sensors = array();
+            foreach ($hpctrl->get_settings($session['userid']) as $key=>$value) {
+                if (isset($roles[$key]) && $value>0) $sensors[$roles[$key]] = (int) $value;
+            }
+            if (!$mqtt_enable || !hpctrl_publish("hpctrl/sensors", (object) $sensors)) {
+                return array("success"=>false, "message"=>"Saved, but not sent to the service");
+            }
         }
         return array("success"=>true);
     }

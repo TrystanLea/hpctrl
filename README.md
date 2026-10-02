@@ -10,7 +10,7 @@ Schedule based control of a 5kW Mitsubishi Ecodan via its CN105 port, running on
 - Frost protection pump cycling based on external pipe temperature
 - emoncms web UI for the schedule, with live flow, outside, electric, heat and COP
 - Activity panel showing what the service is doing and why, with a log of recent events
-- Control inputs chosen from emoncms inputs in the UI, with stale value detection
+- Sensors chosen from emoncms feeds in the UI, with stale value detection
 - Control parameters (thermostat hysteresis, Min mode curve, hot water, frost protection) tunable in the UI
 - Hot water run on demand from the UI
 - Commands checked against what the Ecodan reports back over CN105, and resent if lost
@@ -20,12 +20,12 @@ Schedule based control of a 5kW Mitsubishi Ecodan via its CN105 port, running on
 
 ```
  emoncms UI (hpctrl-module)
-   │ published to MQTT, retained: hpctrl/config (schedule), hpctrl/inputs
-   │ (input ids), hpctrl/params (control parameters); not retained:
+   │ published to MQTT, retained: hpctrl/config (schedule), hpctrl/sensors
+   │ (feed ids), hpctrl/params (control parameters); not retained:
    │ hpctrl/command (hot water now / stop)
    ▼
  service/hpctrl.py ─── one process, every 10 s ───────────────────────────
-   │  inputs.py      read input:lastvalue:<id> from Redis (emoncms inputs)
+   │  sensors.py     read feed:<id> from Redis (emoncms feeds)
    │  controller.py  thermostat, flow target, hot water, frost protection
    │  hardware.py    power + flow temperature to the Ecodan over CN105 (cn105.py),
    │                 poll its readings, resend commands it hasn't taken up
@@ -40,17 +40,19 @@ The controller is pure logic with no I/O, so its behaviour is covered by tests t
 
     python3 -m unittest discover tests
 
-### Control inputs
+### Sensors
 
-Chosen in the UI settings page (wrench icon) under Control inputs. A value older than 10 minutes (room: 30 minutes) counts as missing:
+Chosen in the UI settings page (wrench icon) under Sensors, from emoncms feeds. Feeds come after input processing, so scaling or calibration set up in emoncms applies, and they keep history. Control sensors are only used once chosen: a feed with a matching name is offered as a suggestion, never applied automatically. Virtual feeds can't be used for control. A value older than 10 minutes (room: 30 minutes) counts as missing:
 
-| Input | Required | When missing |
+| Sensor | Required | When missing |
 |---|---|---|
 | Room temperature | yes | assumes 10°, so heating stays on |
 | Flow, return temperature, flow rate | yes | control waits and outputs are held |
 | Cylinder top, bottom | for hot water | a hot water run stops, or is skipped |
 | External pipe | no | if chosen, assumed freezing (pump cycles); if not used, no frost protection |
-| Outside temperature | no | logged only |
+| Outside temperature | no | shown and logged only |
+
+Electric input and heat output are for the main page only (COP).
 
 ### Redis keys
 
@@ -58,8 +60,8 @@ emoncms's Redis prefix (`[redis] prefix` in its settings) applies to the first t
 
 | Key | Written by | Read by |
 |---|---|---|
-| `input:lastvalue:<id>` | emoncms | service, control inputs |
-| `hpctrl:status` | service | UI, current state, reason, outputs, input ages, Ecodan readings |
+| `feed:<id>` | emoncms | service, sensor values |
+| `hpctrl:status` | service | UI, current state, reason, outputs, sensor ages, Ecodan readings |
 | `hpctrl:events` | service | UI, last 200 events |
 | `emonhub:sub` | service | emonhub, Ecodan readings as node `ecodan` and controller targets as node `hpctrl` |
 
@@ -79,8 +81,8 @@ Node `hpctrl` appears in emoncms inputs with the controller's view of things eve
 
 ```
 hpctrl-module/   emoncms web module, symlinked to /var/www/emoncms/Modules/hpctrl
-service/         hpctrl.py (the service), controller.py, inputs.py, hardware.py, cn105.py
-tests/           controller and command verification tests
+service/         hpctrl.py (the service), controller.py, sensors.py, hardware.py, cn105.py
+tests/           controller, sensor and command verification tests
 systemd/         unit template and install script
 config/          *.default / *.example files are tracked, local copies are gitignored
 tools/           CN105 debugging and bench scripts (stop the service first: one serial port)
@@ -105,7 +107,7 @@ Service:
 
     ./systemd/install_service.sh hpctrl
 
-Then open the UI, settings, and choose the control inputs. Until they are chosen the service waits and leaves the heat pump as it is.
+Then open the UI, settings, and choose the sensors. Until they are chosen the service waits and leaves the heat pump as it is.
 
 Logs: `sudo journalctl -f -u hpctrl -o cat`
 
@@ -113,9 +115,9 @@ Logs: `sudo journalctl -f -u hpctrl -o cat`
 
     python3 service/hpctrl.py --dry-run
 
-Runs the controller without touching the serial port or relay and without publishing to MQTT. Decisions are logged and shown in the UI Activity panel, marked Dry run. Useful for checking inputs and behaviour before handing over control.
+Runs the controller without touching the serial port or relay and without publishing to MQTT. Decisions are logged and shown in the UI Activity panel, marked Dry run. Useful for checking sensors and behaviour before handing over control.
 
-The service keeps a copy of the last schedule, inputs and control parameters it received in `config/schedule.json`, `config/inputs.json` and `config/params.json`, so it starts with them even if MQTT is down.
+The service keeps a copy of the last schedule, sensors and control parameters it received in `config/schedule.json`, `config/sensors.json` and `config/params.json`, so it starts with them even if MQTT is down.
 
 ## Schedule format
 

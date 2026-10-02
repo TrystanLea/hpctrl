@@ -10,41 +10,43 @@ var COLOR_STOPS = [
     [25,   [217, 67, 104]]
 ];
 
-// Live value feeds. Without a saved choice the first feed found by name is used.
-var FEEDS = [
-    { key: 'room',    label: 'Room temperature',    unit: '°C', required: true, icon: 'svg-icon-home',
-      description: 'Shown on the dial, sets heating or holding', names: ['heatpump_roomT', 'room_temperature', 'roomT'] },
-    { key: 'flow',    label: 'Flow temperature',    unit: '°C', icon: 'svg-icon-radiator',
-      description: 'Heat pump flow temperature', names: ['heatpump_flowT'] },
-    { key: 'outside', label: 'Outside temperature', unit: '°C', icon: 'svg-icon-earth',
-      description: 'Outside or heat pump ambient temperature', names: ['heatpump_outsideT', 'heatpump_ambient'] },
-    { key: 'elec',    label: 'Electric input',      unit: 'W', icon: 'svg-icon-smartmeter',
-      description: 'Heat pump electric power', names: ['heatpump_elec'] },
-    { key: 'heat',    label: 'Heat output',         unit: 'W', icon: 'svg-icon-sun',
-      description: 'Heat pump heat output, with electric input gives COP', names: ['heatpump_heat'] }
-];
-
-// Control inputs: emoncms inputs read by the hpctrl service. Values older than
-// stale (s) are treated as missing, as service/inputs.py.
-var INPUTS = [
-    { key: 'in_room',     role: 'room',     label: 'Room temperature',     unit: '°C', required: true, icon: 'svg-icon-home', stale: 1800,
-      description: 'Thermostat. If stale the service assumes 10° and heats' },
-    { key: 'in_flow',     role: 'flow',     label: 'Flow temperature',     unit: '°C', required: true, icon: 'svg-icon-radiator',
+// Sensors are emoncms feeds.
+// role: read by the hpctrl service (service/sensors.py), which treats a value older than stale (s, default
+//   600) as missing. Only used once chosen: a feed found by name is offered as a suggestion.
+// display: shown on the main page. Without a saved choice the first feed found by name is shown.
+var SENSORS = [
+    { key: 'room', role: 'room', display: true, required: true, stale: 1800, unit: '°C', icon: 'svg-icon-home',
+      label: 'Room temperature', names: ['heatpump_roomT', 'room_temperature', 'roomT'],
+      description: 'Thermostat, shown on the dial. If stale the service assumes 10° and heats' },
+    { key: 'flow', role: 'flow', display: true, required: true, unit: '°C', icon: 'svg-icon-radiator',
+      label: 'Flow temperature', names: ['heatpump_flowT'],
       description: 'Control waits while this is missing' },
-    { key: 'in_return',   role: 'return',   label: 'Return temperature',   unit: '°C', required: true, icon: 'svg-icon-radiator',
+    { key: 'return', role: 'return', required: true, unit: '°C', icon: 'svg-icon-radiator',
+      label: 'Return temperature', names: ['heatpump_returnT'],
       description: 'Sets the flow target in Min mode' },
-    { key: 'in_flowrate', role: 'flowrate', label: 'Flow rate',            unit: '', required: true, icon: 'svg-icon-refresh-cw',
+    { key: 'flowrate', role: 'flowrate', required: true, unit: '', icon: 'svg-icon-refresh-cw',
+      label: 'Flow rate', names: ['heatpump_flowrate'],
       description: 'Above zero at service start means the heat pump is already heating' },
-    { key: 'in_cyl_top',  role: 'cyl_top',  label: 'Cylinder top',         unit: '°C', dhw: true, icon: 'svg-icon-shower',
-      description: 'Hot water run ends when top reaches target' },
-    { key: 'in_cyl_bot',  role: 'cyl_bot',  label: 'Cylinder bottom',      unit: '°C', dhw: true, icon: 'svg-icon-shower',
-      description: '...and bottom is within 3°. Sets the hot water flow target in Min mode' },
-    { key: 'in_ambient',  role: 'ambient',  label: 'Outside temperature',  unit: '°C', icon: 'svg-icon-earth',
-      description: 'Logged only' },
-    { key: 'in_extpipe',  role: 'extpipe',  label: 'External pipe',        unit: '°C', icon: 'svg-icon-snowflake',
-      description: 'Frost protection cycles the pump below 4°. Not used: no frost protection' }
+    { key: 'cyl_top', role: 'cyl_top', dhw: true, unit: '°C', icon: 'svg-icon-shower',
+      label: 'Cylinder top', names: ['cyl_top', 'cylinder_top'],
+      description: 'A hot water run ends when the top reaches its target' },
+    { key: 'cyl_bot', role: 'cyl_bot', dhw: true, unit: '°C', icon: 'svg-icon-shower',
+      label: 'Cylinder bottom', names: ['cyl_bot', 'cylinder_bottom'],
+      description: '...and the bottom is within 3°. Sets the hot water flow target in Min mode' },
+    { key: 'outside', role: 'ambient', display: true, unit: '°C', icon: 'svg-icon-earth',
+      label: 'Outside temperature', names: ['heatpump_outsideT', 'heatpump_ambient'],
+      description: 'Shown on the main page and logged by the service' },
+    { key: 'extpipe', role: 'extpipe', unit: '°C', icon: 'svg-icon-snowflake',
+      label: 'External pipe', names: [],
+      description: 'Frost protection cycles the pump below 4°. Not used: no frost protection' },
+    { key: 'elec', display: true, unit: 'W', icon: 'svg-icon-smartmeter',
+      label: 'Electric input', names: ['heatpump_elec'],
+      description: 'Heat pump electric power' },
+    { key: 'heat', display: true, unit: 'W', icon: 'svg-icon-sun',
+      label: 'Heat output', names: ['heatpump_heat'],
+      description: 'Heat pump heat output, with electric input gives COP' }
 ];
-var INPUT_STALE = 600;
+var VIRTUAL_FEED = 7;  // engine: values computed on demand, nothing in Redis for the service to read
 
 // Control parameters, set in the service (service/controller.py PARAMS, LIMITS).
 // scale: shown in minutes, stored in seconds.
@@ -53,7 +55,7 @@ var PARAM_GROUPS = [
         { key: 'hysteresis', label: 'Hysteresis', unit: '°', step: 0.05,
           description: 'Heating starts below set point minus this, stops above set point plus this' },
         { key: 'room_fallback', label: 'Stale room temperature', unit: '°', step: 0.5,
-          description: 'Assumed when the room input is stale. Below the set point keeps heating on' }
+          description: 'Assumed when the room sensor is stale. Below the set point keeps heating on' }
     ]},
     { label: 'Min mode flow', curve: true, params: [
         { key: 'ratchet_after', label: 'Hold after', unit: 'min', scale: 60, step: 1,
@@ -93,7 +95,7 @@ var PARAM_GROUPS = [
 
 var DIAL_DEFAULTS = { dial_min: 5, dial_max: 25, dial_step: 0.1 };
 
-// Type-to-filter picker for feeds and inputs.
+// Type-to-filter picker for feeds.
 // options: [{ value, label, group, detail }]; group is the node or tag, shown as group:label
 var HpPicker = {
     props: { options: Array, value: String, placeholder: String },
@@ -218,12 +220,9 @@ function start_app(schedule) {
             return {
                 schedule: schedule,
                 settings: settings,
-                feed_defs: FEEDS,
+                sensor_defs: SENSORS.filter(function (d) { return dhw_enable || !d.dhw; }),
                 feeds: [],
                 feeds_loaded: false,
-                input_defs: INPUTS.filter(function (d) { return dhw_enable || !d.dhw; }),
-                inputs: [],
-                inputs_loaded: false,
                 param_groups: PARAM_GROUPS.filter(function (g) { return dhw_enable || !g.dhw; }),
                 param_edits: {},
                 command_pending: '',
@@ -265,57 +264,29 @@ function start_app(schedule) {
                     return { tag: tag, feeds: groups[tag].sort(function (a, b) { return a.name.localeCompare(b.name); }) };
                 });
             },
-            feed_rows: function () {
+            sensor_rows: function () {
                 var self = this;
-                return FEEDS.map(function (def) {
+                return this.sensor_defs.map(function (def) {
                     var choice = self.settings[def.key];
-                    var feed = self.resolve(def);
-                    var state = feed ? (choice === undefined ? 'auto' : 'ok') : (choice === 0 || !def.required ? 'off' : 'miss');
-                    return { def: def, feed: feed, state: state, choice: choice === undefined ? 'auto' : String(choice) };
-                });
-            },
-            feeds_connected: function () {
-                return this.feed_rows.filter(function (r) { return r.feed; }).length;
-            },
-            inputs_by_id: function () {
-                var out = {};
-                this.inputs.forEach(function (i) { out[i.id] = i; });
-                return out;
-            },
-            // Input list grouped by node for the pickers
-            input_groups: function () {
-                var groups = {};
-                this.inputs.forEach(function (i) {
-                    var node = i.nodeid || 'No node';
-                    if (!groups[node]) groups[node] = [];
-                    groups[node].push(i);
-                });
-                return Object.keys(groups).sort().map(function (node) {
-                    return { node: node, inputs: groups[node].sort(function (a, b) { return a.name.localeCompare(b.name); }) };
-                });
-            },
-            input_rows: function () {
-                var self = this;
-                return this.input_defs.map(function (def) {
-                    var choice = self.input_choice(def);
-                    var input = choice ? self.inputs_by_id[choice] || false : false;
+                    var match = self.match(def);
+                    var feed = choice ? self.feeds_by_id[choice] || false : (choice === undefined && !def.role ? match : false);
                     var state;
-                    if (input) state = self.input_stale(input, def) ? 'stale' : 'ok';
-                    else if (choice) state = 'miss';  // chosen, but not in the input list
+                    if (choice && !feed) state = 'miss';  // chosen, but no longer in the feed list
+                    else if (feed) state = self.feed_stale(feed, def) ? 'stale' : (choice === undefined ? 'auto' : 'ok');
                     else if (choice === 0) state = 'off';
-                    else state = def.required || def.dhw ? 'miss' : 'off';
-                    return { def: def, input: input, state: state, choice: choice === undefined ? '' : String(choice) };
+                    else state = def.role && (def.required || def.dhw) ? 'miss' : 'off';
+                    return {
+                        def: def, feed: feed, state: state,
+                        choice: choice === undefined ? (def.role ? '' : 'auto') : String(choice),
+                        suggestion: def.role && choice === undefined && match && match.engine != VIRTUAL_FEED ? match : false
+                    };
                 });
             },
-            inputs_connected: function () {
-                return this.input_rows.filter(function (r) { return r.input; }).length;
+            sensors_connected: function () {
+                return this.sensor_rows.filter(function (r) { return r.feed; }).length;
             },
-            // Feeds for the display, inputs for the service
-            ready_count: function () {
-                return this.feeds_connected + this.inputs_connected;
-            },
-            ready_total: function () {
-                return this.feed_defs.length + this.input_defs.length;
+            suggestions: function () {
+                return this.sensor_rows.filter(function (r) { return r.suggestion; });
             },
             status_live: function () {
                 return !!this.status && this.status_age < 60;
@@ -330,7 +301,7 @@ function start_app(schedule) {
             },
             // Min mode flow target now, from the curve being edited and the return temperature the service sees
             curve_preview: function () {
-                var ret = this.status && this.status.inputs && this.status.inputs['return'];
+                var ret = this.status && this.status.sensors && this.status.sensors['return'];
                 if (!this.params_live || !ret || ret.value === null) return '';
                 var rT1 = this.param('min_rT1'), dT1 = this.param('min_dT1'), rT2 = this.param('min_rT2'), dT2 = this.param('min_dT2');
                 if (rT1 == rT2) return '';
@@ -359,7 +330,7 @@ function start_app(schedule) {
             dhw_running: function () {
                 return this.status_live && this.status.mode == 'dhw';
             },
-            waiting_for_inputs: function () {
+            waiting_for_sensors: function () {
                 return this.status_live && this.status.label == 'Waiting';
             },
             events_shown: function () {
@@ -372,11 +343,10 @@ function start_app(schedule) {
             elec: function () { return this.live_value('elec'); },
             heat: function () { return this.live_value('heat'); },
             live: function () {
-                return !this.feed_stale(this.resolve(FEEDS[0]));
+                return !this.feed_stale(this.resolve(SENSORS[0]), SENSORS[0]);
             },
             ready: function () {
-                if (this.feed_rows.some(function (r) { return r.state == 'miss'; })) return false;
-                return !this.inputs_loaded || !this.input_rows.some(function (r) { return r.state == 'miss'; });
+                return !this.sensor_rows.some(function (r) { return r.state == 'miss'; });
             },
             now_minutes: function () {
                 return this.now.getHours() * 60 + this.now.getMinutes();
@@ -653,43 +623,48 @@ function start_app(schedule) {
             },
 
             // Settings
-            resolve: function (def) {
-                var choice = this.settings[def.key];
-                if (choice === 0) return false;
-                if (choice !== undefined) return this.feeds_by_id[choice] || false;
+            // First feed found by one of the sensor's names
+            match: function (def) {
                 for (var i = 0; i < def.names.length; i++) {
                     var match = this.feeds.find(function (f) { return f.name == def.names[i]; });
                     if (match) return match;
                 }
                 return false;
             },
+            // Feed shown on the main page: saved choice, else a name match
+            resolve: function (def) {
+                var choice = this.settings[def.key];
+                if (choice === 0) return false;
+                if (choice !== undefined) return this.feeds_by_id[choice] || false;
+                return this.match(def);
+            },
             live_value: function (key) {
-                var f = this.resolve(FEEDS.find(function (d) { return d.key == key; }));
+                var f = this.resolve(SENSORS.find(function (d) { return d.key == key; }));
                 return (f && f.value !== null && !isNaN(f.value)) ? f.value * 1 : false;
             },
-            // Picker options
-            feed_options: function (def) {
-                var self = this;
-                var out = [{ value: 'auto', label: 'Auto (' + def.names.join(', ') + ')' }];
+            sensor_options: function (row) {
+                var self = this, def = row.def;
+                var out = [];
+                if (!def.role) out.push({ value: 'auto', label: 'Auto (' + def.names.join(', ') + ')' });
                 if (!def.required) out.push({ value: '0', label: 'Not used' });
+                if (row.state == 'miss' && row.choice) out.push({ value: row.choice, label: 'Feed ' + row.choice + ' (not found)' });
                 this.feed_groups.forEach(function (group) {
                     group.feeds.forEach(function (f) {
+                        if (def.role && f.engine == VIRTUAL_FEED) return;
                         out.push({ value: String(f.id), label: f.name, group: group.tag, detail: self.feed_value(f, def.unit) });
                     });
                 });
                 return out;
             },
-            input_options: function (row) {
+            set_sensor: function (def, value) {
+                if (value == 'auto') delete this.settings[def.key];
+                else this.settings[def.key] = value * 1;
+                this.save_settings(!!def.role);
+            },
+            use_suggestions: function () {
                 var self = this;
-                var out = [];
-                if (!row.def.required) out.push({ value: '0', label: 'Not used' });
-                if (row.state == 'miss' && row.choice) out.push({ value: row.choice, label: 'Input ' + row.choice + ' (not found)' });
-                this.input_groups.forEach(function (group) {
-                    group.inputs.forEach(function (i) {
-                        out.push({ value: String(i.id), label: i.name, group: String(group.node), detail: self.input_value(i, row.def) });
-                    });
-                });
-                return out;
+                this.suggestions.forEach(function (r) { self.settings[r.def.key] = r.suggestion.id * 1; });
+                this.save_settings(true);
             },
 
             // Control parameters: shown from the service, edits held until it reports them
@@ -765,35 +740,6 @@ function start_app(schedule) {
                 setTimeout(function () { if (self.command_pending == cmd) self.command_pending = ''; }, 30000);
             },
 
-            // Saved choice, else the input the service is using now
-            input_choice: function (def) {
-                var choice = this.settings[def.key];
-                if (choice !== undefined) return choice;
-                var used = this.status && this.status.inputs && this.status.inputs[def.role];
-                return used ? used.id : undefined;
-            },
-            input_stale: function (input, def) {
-                return !input.time || this.now.getTime() / 1000 - input.time > (def.stale || INPUT_STALE);
-            },
-            input_value: function (input, def) {
-                if (!input || input.value === null || isNaN(input.value)) return '--';
-                return (input.value * 1).toFixed(def.unit ? 1 : 2) + (def.unit ? def.unit : '');
-            },
-            // The service gets the whole mapping, so save the inputs in use now along with the change
-            set_input: function (key, value) {
-                var self = this;
-                this.input_defs.forEach(function (def) {
-                    var choice = self.input_choice(def);
-                    if (self.settings[def.key] === undefined && choice !== undefined) self.settings[def.key] = choice;
-                });
-                this.settings[key] = value * 1;
-                this.save_settings();
-            },
-            set_feed: function (key, value) {
-                if (value == 'auto') delete this.settings[key];
-                else this.settings[key] = value * 1;
-                this.save_settings();
-            },
             set_dial: function (key, value) {
                 value = parseFloat(value);
                 if (isNaN(value)) return;
@@ -802,7 +748,8 @@ function start_app(schedule) {
             },
             feed_value: function (feed, unit) {
                 if (!feed || feed.value === null || isNaN(feed.value)) return '--';
-                return (feed.value * 1).toFixed(unit == 'W' ? 0 : 1) + (unit == 'W' ? ' W' : '°C');
+                if (unit == 'W') return (feed.value * 1).toFixed(0) + ' W';
+                return (feed.value * 1).toFixed(unit ? 1 : 2) + unit;
             },
             feed_age: function (feed) {
                 if (!feed || !feed.time) return '';
@@ -815,15 +762,16 @@ function start_app(schedule) {
                 if (s < 86400) return Math.round(s / 3600) + ' h';
                 return Math.round(s / 86400) + ' days';
             },
-            feed_stale: function (feed) {
-                return !feed || this.now.getTime() / 1000 - feed.time > 300;
+            feed_stale: function (feed, def) {
+                return !feed || this.now.getTime() / 1000 - feed.time > ((def && def.stale) || 600);
             },
-            save_settings: function () {
+            // publish: also send the sensor feeds to the service
+            save_settings: function (publish) {
                 var self = this;
                 this.settings_state = 'saving';
                 $.ajax({
                     method: "POST", url: path + "hpctrl/set-settings", dataType: 'json',
-                    data: { settings: JSON.stringify(this.settings) },
+                    data: { settings: JSON.stringify(this.settings), publish_sensors: publish === true ? 1 : '' },
                     success: function (result) {
                         self.settings_state = (result && result.success) ? 'saved' : 'error';
                     },
@@ -840,7 +788,6 @@ function start_app(schedule) {
             },
             open_settings: function () {
                 this.view = 'settings';
-                this.load_inputs();
                 window.scrollTo(0, 0);
             },
             event_time: function (time) {
@@ -855,14 +802,6 @@ function start_app(schedule) {
                 window.scrollTo(0, 0);
             },
 
-            load_inputs: function () {
-                var self = this;
-                $.ajax({ url: path + "input/list.json", dataType: 'json', cache: false, success: function (inputs) {
-                    if (!Array.isArray(inputs)) return;
-                    self.inputs = inputs;
-                    self.inputs_loaded = true;
-                }});
-            },
             load_status: function () {
                 var self = this;
                 $.ajax({ url: path + "hpctrl/status.json", dataType: 'json', cache: false, success: function (result) {
@@ -886,7 +825,6 @@ function start_app(schedule) {
                 var self = this;
                 this.now = new Date();
                 this.load_status();
-                if (this.view == 'settings') this.load_inputs();
                 $.ajax({ url: path + "feed/list.json", dataType: 'json', cache: false, success: function (feeds) {
                     if (!Array.isArray(feeds)) return;
                     self.feeds = feeds;

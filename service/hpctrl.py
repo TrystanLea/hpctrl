@@ -1,14 +1,14 @@
 """hpctrl service: schedule based control of an Ecodan heat pump.
 
 One process, one loop, every 10 seconds:
-  read control inputs (emoncms inputs in Redis)
+  read control sensors (emoncms feeds in Redis)
   run the controller (controller.py)
   apply its outputs: CN105 power and flow temperature, 3-way valve relay
   poll the Ecodan over CN105 and pass its readings to emonhub
   publish the mode over MQTT and the status and events to Redis for the UI
   pass the controller's targets to emonhub as node hpctrl, for graphing
 
-The schedule (hpctrl/config), input mapping (hpctrl/inputs) and control
+The schedule (hpctrl/config), sensor mapping (hpctrl/sensors) and control
 parameters (hpctrl/params) arrive as retained MQTT messages from the emoncms
 UI, and manual commands as hpctrl/command. The paho network thread hands them
 to the main loop. A local copy of each retained message is kept in config/ for
@@ -17,7 +17,7 @@ when MQTT is unavailable at start.
 Usage: python3 hpctrl.py [--dry-run]
   --dry-run  no serial port, relay or MQTT publishing; decisions are logged
              and shown in the UI. Safe to run while another controller is in
-             charge of the heat pump, e.g. to check the inputs before switching.
+             charge of the heat pump, e.g. to check the sensors before switching.
 """
 import os
 import re
@@ -32,13 +32,13 @@ import redis
 import paho.mqtt.client as mqtt
 
 from controller import Controller, DHW_BOOST_T
-from inputs import Inputs
+from sensors import Sensors
 from hardware import Hardware
 
 REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 CONFIG = os.path.join(REPO, "config")
 SCHEDULE_FILE = os.path.join(CONFIG, "schedule.json")
-INPUTS_FILE = os.path.join(CONFIG, "inputs.json")
+SENSORS_FILE = os.path.join(CONFIG, "sensors.json")
 PARAMS_FILE = os.path.join(CONFIG, "params.json")
 MQTT_FILE = os.path.join(CONFIG, "mqtt.json")
 EMONCMS_DIR = "/var/www/emoncms"
@@ -98,19 +98,19 @@ class Service:
         self.redis = redis.Redis()
         self.controller = Controller()
         self.controller_defaults = dict(self.controller.p)
-        self.inputs = Inputs(self.redis, self.prefix)
+        self.sensors = Sensors(self.redis, self.prefix)
         self.hardware = Hardware(dry_run)
         self.ecodan = {}
         self.outputs = None
 
         self.schedule = load_json(SCHEDULE_FILE, DEFAULT_SCHEDULE)
-        self.inputs.configure(load_json(INPUTS_FILE, {}))
+        self.sensors.configure(load_json(SENSORS_FILE, {}))
         self.controller.set_params(load_json(PARAMS_FILE, {}))
         self.pending = {}   # topic -> payload, from the MQTT thread
 
-        self.event("service", "hpctrl started%s, %d heating periods, inputs: %s" % (
+        self.event("service", "hpctrl started%s, %d heating periods, sensors: %s" % (
             " (dry run)" if dry_run else "", len(self.schedule.get("heating", [])),
-            ", ".join(sorted(self.inputs.mapping)) or "none"))
+            ", ".join(sorted(self.sensors.mapping)) or "none"))
         log("emoncms redis prefix: '%s'" % self.prefix)
         self.mqtt_start()
 
@@ -138,7 +138,7 @@ class Service:
             "started": self.started,
             "dry_run": self.dry_run,
             "mqtt": self.mqtt_connected,
-            "inputs": self.inputs.details,
+            "sensors": self.sensors.details,
             "ecodan": self.ecodan,
             "verify": self.hardware.verifier.status(),
         })
@@ -169,7 +169,7 @@ class Service:
         self.mqtt_connected = rc == 0
         if rc == 0:
             log("MQTT connected")
-            for topic in ("hpctrl/config", "hpctrl/inputs", "hpctrl/params", "hpctrl/command"):
+            for topic in ("hpctrl/config", "hpctrl/sensors", "hpctrl/params", "hpctrl/command"):
                 client.subscribe(topic)
         else:
             log("MQTT connect failed: %s" % rc)
@@ -195,10 +195,10 @@ class Service:
                     save_json(SCHEDULE_FILE, data)
                     self.event("config", "Schedule updated: %d heating periods, %d hot water runs" % (
                         len(data["heating"]), len(data.get("dhw", []))))
-            elif topic == "hpctrl/inputs":
-                if isinstance(data, dict) and self.inputs.configure(data):
-                    save_json(INPUTS_FILE, self.inputs.mapping)
-                    self.event("config", "Inputs updated: %s" % (", ".join(sorted(self.inputs.mapping)) or "none"))
+            elif topic == "hpctrl/sensors":
+                if isinstance(data, dict) and self.sensors.configure(data):
+                    save_json(SENSORS_FILE, self.sensors.mapping)
+                    self.event("config", "Sensors updated: %s" % (", ".join(sorted(self.sensors.mapping)) or "none"))
             elif topic == "hpctrl/params":
                 if isinstance(data, dict) and self.controller.set_params(data):
                     save_json(PARAMS_FILE, data)
@@ -256,8 +256,8 @@ class Service:
         t = time.time()
         self.handle_messages()
 
-        values = self.inputs.read(t)
-        self.drain(self.inputs)
+        values = self.sensors.read(t)
+        self.drain(self.sensors)
 
         outputs = self.controller.step(datetime.datetime.fromtimestamp(t), values, self.schedule)
         self.drain(self.controller)
@@ -293,7 +293,7 @@ class Service:
         end = time.time() + timeout
         while time.time() < end and "hpctrl/config" not in self.pending:
             time.sleep(0.5)
-        time.sleep(1)  # let hpctrl/inputs arrive too
+        time.sleep(1)  # let hpctrl/sensors arrive too
         if "hpctrl/config" not in self.pending:
             self.event("config", "No schedule received, using the default (5° set point)")
 

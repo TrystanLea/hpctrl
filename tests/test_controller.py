@@ -62,7 +62,7 @@ class TestInputs(unittest.TestCase):
         self.assertEqual(sim.out, before)
         self.assertEqual(sim.c.describe(0)[0], "Waiting")
         sim.run(30, **{"return": 25.0})
-        self.assertIn("Inputs available, control resumed", sim.events())
+        self.assertIn("Sensors available, control resumed", sim.events())
 
     def test_stale_room_assumes_cold(self):
         sim = Sim(off(room=None))
@@ -227,7 +227,7 @@ class TestHotWater(unittest.TestCase):
     def test_skipped_when_cylinder_not_configured(self):
         sim = Sim(off(), DHW, (2, 0))
         self.assertEqual(sim.step()["mode"], 0)
-        self.assertIn("Hot water run skipped: cylinder inputs not configured", sim.events())
+        self.assertIn("Hot water run skipped: cylinder sensors not configured", sim.events())
 
 
 class TestManualHotWater(unittest.TestCase):
@@ -269,7 +269,7 @@ class TestManualHotWater(unittest.TestCase):
         sim.step()
         sim.c.request_dhw(self.RUN)
         self.assertEqual(sim.step()["valve"], 0)
-        self.assertIn("Hot water run skipped: cylinder inputs not configured", sim.events())
+        self.assertIn("Hot water run skipped: cylinder sensors not configured", sim.events())
 
 
 class TestParams(unittest.TestCase):

@@ -2,5 +2,5 @@ __pycache__/
 config/ui_settings.php
 config/mqtt.json
 config/schedule.json
-config/inputs.json
+config/sensors.json
 config/params.json

@@ -191,7 +191,7 @@ load_css("Modules/hpctrl/Views/hpctrl.css");
             <span v-if="status.ecodan && status.ecodan.freq !== undefined">Compressor <b>{{ status.ecodan.freq }} Hz</b></span>
           </div>
           <div v-for="issue in verify_issues" class="hp-now-warning">{{ issue }}</div>
-          <button v-if="waiting_for_inputs" class="btn btn-sm btn-primary hp-now-action" @click="open_settings"><i class="svg-icon-input"></i> Choose inputs</button>
+          <button v-if="waiting_for_sensors" class="btn btn-sm btn-primary hp-now-action" @click="open_settings"><i class="svg-icon-input"></i> Choose sensors</button>
         </div>
         <div class="hp-now-status is-offline" v-else>
           {{ status ? 'No update from the hpctrl service for ' + ago(status_age) : 'The hpctrl service has not reported yet' }}
@@ -230,60 +230,41 @@ load_css("Modules/hpctrl/Views/hpctrl.css");
     <div class="hp-ready" :class="ready ? 'is-ready' : 'is-missing'">
       <span class="hp-state-icon"><i :class="ready ? 'svg-icon-check' : 'svg-icon-close'"></i></span>
       <div class="hp-ready-text">
-        <b>{{ ready ? 'Ready' : 'Choose the required feeds and inputs' }}</b>
-        <span>{{ ready_count }} of {{ ready_total }} connected</span>
+        <b>{{ ready ? 'Ready' : 'Choose the required sensors' }}</b>
+        <span>{{ sensors_connected }} of {{ sensor_defs.length }} sensors connected</span>
       </div>
-      <div class="hp-ready-bar"><div :style="{ width: (100 * ready_count / ready_total) + '%' }"></div></div>
+      <button v-if="suggestions.length" class="btn btn-sm btn-primary" @click="use_suggestions">Use {{ suggestions.length }} suggested</button>
+      <div v-else class="hp-ready-bar"><div :style="{ width: (100 * sensors_connected / sensor_defs.length) + '%' }"></div></div>
     </div>
   </div>
 
-  <div class="app-section-label hp-settings-label">Feeds</div>
+  <div class="app-section-label hp-settings-label">Sensors</div>
+  <div class="hp-settings-note">emoncms feeds, shown here and read by the hpctrl service. Control sensors are shared by all users.</div>
   <div class="app-card">
-    <div v-for="row in feed_rows" :key="row.def.key" class="hp-feed" :class="'is-' + row.state">
-      <span class="hp-state-icon"><i :class="row.def.icon"></i></span>
-      <div class="hp-feed-text">
-        <div class="hp-feed-name">{{ row.def.label }}
-          <span v-if="row.state=='miss'" class="hp-badge is-miss">Required</span>
-          <span v-else-if="row.state=='auto'" class="hp-badge is-auto">Auto</span>
-        </div>
-        <div class="hp-feed-desc">{{ row.def.description }}</div>
-      </div>
-      <div class="hp-feed-pick">
-        <hp-picker :options="feed_options(row.def)" :value="row.choice" placeholder="Choose feed"
-                   @pick="set_feed(row.def.key, $event)"></hp-picker>
-        <div class="hp-feed-live" v-if="row.feed">
-          <span class="hp-feed-node">{{ row.feed.tag }}:{{ row.feed.name }}</span>
-          <b>{{ feed_value(row.feed, row.def.unit) }}</b>
-          <span :class="{ 'is-stale': feed_stale(row.feed) }">{{ feed_age(row.feed) }}</span>
-        </div>
-        <div class="hp-feed-live" v-else-if="row.state=='miss'">No feed found by name</div>
-        <div class="hp-feed-live" v-else>Not shown</div>
-      </div>
-    </div>
-  </div>
-
-  <div class="app-section-label hp-settings-label">Control inputs</div>
-  <div class="hp-settings-note">Read by the hpctrl service from emoncms inputs. Shared by all users.</div>
-  <div class="app-card">
-    <div v-if="!inputs_loaded" class="hp-feed"><span class="hp-feed-desc">Loading inputs&hellip;</span></div>
-    <div v-else v-for="row in input_rows" :key="row.def.key" class="hp-feed" :class="'is-' + row.state">
+    <div v-for="row in sensor_rows" :key="row.def.key" class="hp-feed" :class="'is-' + row.state">
       <span class="hp-state-icon"><i :class="row.def.icon"></i></span>
       <div class="hp-feed-text">
         <div class="hp-feed-name">{{ row.def.label }}
           <span v-if="row.state=='miss'" class="hp-badge is-miss">Required</span>
           <span v-else-if="row.state=='stale'" class="hp-badge is-stale">Stale</span>
+          <span v-else-if="row.state=='auto'" class="hp-badge is-auto">Auto</span>
+          <span v-if="row.def.role" class="hp-badge is-control" title="Read by the hpctrl service">Control</span>
         </div>
         <div class="hp-feed-desc">{{ row.def.description }}</div>
       </div>
       <div class="hp-feed-pick">
-        <hp-picker :options="input_options(row)" :value="row.choice" placeholder="Choose input"
-                   @pick="set_input(row.def.key, $event)"></hp-picker>
-        <div class="hp-feed-live" v-if="row.input">
-          <span class="hp-feed-node">{{ row.input.nodeid }}:{{ row.input.name }}</span>
-          <b>{{ input_value(row.input, row.def) }}</b>
-          <span :class="{ 'is-stale': row.state=='stale' }">{{ ago(now.getTime() / 1000 - row.input.time) }} ago</span>
+        <hp-picker :options="sensor_options(row)" :value="row.choice" placeholder="Choose feed"
+                   @pick="set_sensor(row.def, $event)"></hp-picker>
+        <div class="hp-feed-live" v-if="row.feed">
+          <span class="hp-feed-node">{{ row.feed.tag }}:{{ row.feed.name }}</span>
+          <b>{{ feed_value(row.feed, row.def.unit) }}</b>
+          <span :class="{ 'is-stale': row.state=='stale' }">{{ feed_age(row.feed) }}</span>
         </div>
-        <div class="hp-feed-live" v-else-if="row.state=='miss'">{{ row.choice ? 'Input ' + row.choice + ' not found' : 'Not set' }}</div>
+        <div class="hp-feed-live" v-else-if="row.suggestion">
+          <span>Suggested <span class="hp-feed-node">{{ row.suggestion.tag }}:{{ row.suggestion.name }}</span></span>
+          <button class="nav-link hp-use" @click="set_sensor(row.def, row.suggestion.id)">Use</button>
+        </div>
+        <div class="hp-feed-live" v-else-if="row.state=='miss'">{{ row.choice ? 'Feed ' + row.choice + ' not found' : 'Not set' }}</div>
         <div class="hp-feed-live" v-else>Not used</div>
       </div>
     </div>

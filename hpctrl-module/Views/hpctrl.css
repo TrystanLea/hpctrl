@@ -613,3 +613,7 @@
     .hp-param { flex: 0 0 100px; }
     .hp-curve { flex: 1 1 100%; }
 }
+
+.hp-badge.is-control { background: var(--bs-secondary-bg); color: var(--bs-secondary-color); }
+.hp-use { padding: 0 !important; border: 0; background: none; font-size: 12px; font-weight: bold; }
+.hp-ready > .btn { flex-shrink: 0; }
