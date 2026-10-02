@@ -83,7 +83,7 @@ load_css("Modules/hpctrl/Views/hpctrl.css");
 
     <!-- Day profile -->
     <div class="hp-profile">
-      <div class="hp-profile-plot">
+      <div class="hp-profile-plot" @pointermove="profile_hover" @pointerleave="hover = null">
         <div v-for="seg in segments" class="hp-seg"
              :class="{ 'is-active': seg.index==active_index }"
              :style="{ left: seg.left+'%', width: seg.width+'%', height: seg.height+'%', '--seg': seg.color }"
@@ -91,7 +91,14 @@ load_css("Modules/hpctrl/Views/hpctrl.css");
              @click="focus_row(seg.index)">
           <span v-if="seg.width>7">{{ seg.set_point }}&deg;</span>
         </div>
+        <svg class="hp-room-line" viewBox="0 0 1440 100" preserveAspectRatio="none" v-if="room_paths.length">
+          <path v-for="d in room_paths" :d="d" vector-effect="non-scaling-stroke"/>
+        </svg>
         <div class="hp-now" :style="{ left: now_pct+'%' }"></div>
+        <div v-if="hover" class="hp-hover" :style="{ left: hover.left+'%' }">
+          <span class="hp-hover-dot" :style="{ bottom: hover.bottom+'%' }"></span>
+          <span class="hp-hover-text" :class="{ 'is-right': hover.left > 70, 'is-left': hover.left < 30 }">{{ hover.text }}</span>
+        </div>
         <template v-if="dhw_enable">
           <div v-for="run in schedule.dhw" class="hp-dhw-pin"
                :style="{ left: minutes(run.start)/14.4+'%' }" :title="'Hot water '+fmt_time(run.start)+'  '+run.T+'°'">
@@ -100,6 +107,7 @@ load_css("Modules/hpctrl/Views/hpctrl.css");
         </template>
       </div>
       <div class="hp-profile-axis"><span>00</span><span>06</span><span>12</span><span>18</span><span>24</span></div>
+      <div class="hp-profile-key" v-if="room_paths.length"><span class="hp-key-room"></span>Room today<span class="hp-key-sp" :style="{ background: sp_color }"></span>Set point</div>
     </div>
   </div>
 

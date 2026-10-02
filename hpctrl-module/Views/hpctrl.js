@@ -230,6 +230,10 @@ function start_app(schedule) {
                 status_age: 0,
                 events: [],
                 show_all_events: false,
+                room_history: [],      // [[time ms, value]] from midnight, 5 min averages
+                history_key: '',       // feed id and day the history was loaded for
+                history_time: 0,
+                hover: null,
                 view: 'control',
                 settings_state: '',
                 dhw_enable: dhw_enable,
@@ -423,7 +427,7 @@ function start_app(schedule) {
                     segs.push({
                         index: index, start: list[index].start, set_point: sp,
                         left: from / 14.4, width: (to - from) / 14.4,
-                        height: 18 + 82 * self.clamp((sp - self.t_min) / (self.t_max - self.t_min), 0, 1),
+                        height: self.level(sp),
                         color: self.temp_color(sp)
                     });
                 };
@@ -433,6 +437,27 @@ function start_app(schedule) {
                     add(i, this.minutes(list[i].start), end);
                 }
                 return segs;
+            },
+            // Room temperature since midnight as SVG paths on the profile's 1440 x 100 box, broken at gaps.
+            // The live value continues the line to the now marker.
+            room_paths: function () {
+                var self = this;
+                var midnight = new Date(this.now).setHours(0, 0, 0, 0);
+                var points = this.room_history.slice();
+                if (this.room !== false) points.push([this.now.getTime(), this.room]);
+                var paths = [], d = '';
+                points.forEach(function (p) {
+                    if (p[1] === null || isNaN(p[1])) {
+                        if (d) paths.push(d);
+                        d = '';
+                        return;
+                    }
+                    var x = (p[0] - midnight) / 60000;
+                    var y = 100 - self.level(p[1]);
+                    d += (d ? 'L' : 'M') + x.toFixed(1) + ',' + y.toFixed(2);
+                });
+                if (d) paths.push(d);
+                return paths;
             },
             now_pct: function () {
                 return this.now_minutes / 14.4;
@@ -469,6 +494,10 @@ function start_app(schedule) {
             fmt_time: function (start) {
                 var s = String(start).padStart(4, '0');
                 return s.substr(0, 2) + ':' + s.substr(2, 2);
+            },
+            // Height on the day profile, % from the bottom: set point bars and the room line share it
+            level: function (t) {
+                return 18 + 82 * this.clamp((t - this.t_min) / (this.t_max - this.t_min), 0, 1);
             },
             angle: function (t) {
                 return 135 + 270 * this.clamp((t - this.t_min) / (this.t_max - this.t_min), 0, 1);
@@ -802,6 +831,54 @@ function start_app(schedule) {
                 window.scrollTo(0, 0);
             },
 
+            // Room feed since midnight, reloaded every 5 min and when the feed or day changes
+            load_history: function () {
+                var self = this;
+                var feed = this.resolve(SENSORS[0]);
+                if (!feed) {
+                    this.room_history = [];
+                    return;
+                }
+                var key = feed.id + ':' + this.now.toDateString();
+                if (key == this.history_key && Date.now() - this.history_time < 300000) return;
+                this.history_key = key;
+                this.history_time = Date.now();
+                var start = new Date(this.now).setHours(0, 0, 0, 0);
+                $.ajax({
+                    url: path + "feed/data.json", dataType: 'json', cache: false,
+                    data: { id: feed.id, start: start, end: Date.now(), interval: 300, average: 1, skipmissing: 0 },
+                    success: function (data) {
+                        if (Array.isArray(data) && key == self.history_key) self.room_history = data;
+                    }
+                });
+            },
+            // Readout under the pointer: room temperature and set point at that time
+            profile_hover: function (e) {
+                var box = e.currentTarget.getBoundingClientRect();
+                var minute = this.clamp((e.clientX - box.left) / box.width, 0, 1) * 1440;
+                if (minute > this.now_minutes) {
+                    this.hover = null;
+                    return;
+                }
+                var midnight = new Date(this.now).setHours(0, 0, 0, 0);
+                var t = midnight + minute * 60000;
+                var best = null;
+                this.room_history.forEach(function (p) {
+                    if (p[1] !== null && (!best || Math.abs(p[0] - t) < Math.abs(best[0] - t))) best = p;
+                });
+                if (this.room !== false && (!best || Math.abs(this.now.getTime() - t) < Math.abs(best[0] - t))) best = [this.now.getTime(), this.room];
+                if (!best || Math.abs(best[0] - t) > 900000) {
+                    this.hover = null;
+                    return;
+                }
+                var m = Math.round((best[0] - midnight) / 60000);
+                var list = this.schedule.heating, sp = list[list.length - 1].set_point;
+                for (var i = 0; i < list.length; i++) if (m >= this.minutes(list[i].start)) sp = list[i].set_point;
+                this.hover = {
+                    left: m / 14.4, bottom: this.level(best[1]),
+                    text: this.pad(Math.floor(m / 60)) + ':' + this.pad(m % 60) + '  ' + (best[1] * 1).toFixed(1) + '°  set ' + (sp * 1).toFixed(1) + '°'
+                };
+            },
             load_status: function () {
                 var self = this;
                 $.ajax({ url: path + "hpctrl/status.json", dataType: 'json', cache: false, success: function (result) {
@@ -828,6 +905,7 @@ function start_app(schedule) {
                 $.ajax({ url: path + "feed/list.json", dataType: 'json', cache: false, success: function (feeds) {
                     if (!Array.isArray(feeds)) return;
                     self.feeds = feeds;
+                    self.load_history();
                     // First visit without a room feed: open settings
                     if (!self.feeds_loaded && !self.ready) self.view = 'settings';
                     self.feeds_loaded = true;

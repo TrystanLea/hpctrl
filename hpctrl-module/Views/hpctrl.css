@@ -617,3 +617,69 @@
 .hp-badge.is-control { background: var(--bs-secondary-bg); color: var(--bs-secondary-color); }
 .hp-use { padding: 0 !important; border: 0; background: none; font-size: 12px; font-weight: bold; }
 .hp-ready > .btn { flex-shrink: 0; }
+
+/* -- Room temperature today on the profile --------------------------------- */
+
+.hp-room-line {
+    position: absolute;
+    inset: 0;
+    width: 100%;
+    height: 100%;
+    overflow: visible;
+    pointer-events: none;
+}
+.hp-room-line path {
+    fill: none;
+    stroke: var(--bs-emphasis-color);
+    stroke-width: 2;
+    stroke-linejoin: round;
+    stroke-linecap: round;
+    filter: drop-shadow(0 0 2px rgba(0, 0, 0, 0.6));
+}
+
+.hp-hover {
+    position: absolute;
+    top: 0;
+    bottom: 0;
+    width: 1px;
+    background: color-mix(in srgb, var(--bs-emphasis-color) 35%, transparent);
+    pointer-events: none;
+}
+.hp-hover-dot {
+    position: absolute;
+    left: -4px;
+    width: 9px;
+    height: 9px;
+    margin-bottom: -4px;
+    border: 2px solid var(--bs-emphasis-color);
+    border-radius: 50%;
+    background: var(--ec-app-panel-bg);
+}
+.hp-hover-text {
+    position: absolute;
+    top: -20px;
+    left: 0;
+    transform: translateX(-50%);
+    padding: 1px 6px;
+    border-radius: 4px;
+    background: var(--bs-tertiary-bg);
+    font-size: 11px;
+    white-space: pre;
+    color: var(--bs-emphasis-color);
+    font-variant-numeric: tabular-nums;
+}
+.hp-hover-text.is-right { transform: translateX(-100%); }
+.hp-hover-text.is-left { transform: none; }
+
+.hp-profile-key {
+    display: flex;
+    align-items: center;
+    justify-content: flex-end;
+    gap: 6px;
+    margin-top: 6px;
+    font-size: 11px;
+    color: var(--bs-secondary-color);
+}
+.hp-key-room, .hp-key-sp { display: inline-block; width: 14px; height: 2px; border-radius: 1px; }
+.hp-key-room { background: var(--bs-emphasis-color); }
+.hp-key-sp { margin-left: 8px; }

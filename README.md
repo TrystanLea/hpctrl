@@ -9,6 +9,7 @@ Schedule based control of a 5kW Mitsubishi Ecodan via its CN105 port, running on
 - Scheduled domestic hot water (DHW) runs via a 3-way valve relay
 - Frost protection pump cycling based on external pipe temperature
 - emoncms web UI for the schedule, with live flow, outside, electric, heat and COP
+- Day profile with today's room temperature drawn over the set point schedule
 - Activity panel showing what the service is doing and why, with a log of recent events
 - Sensors chosen from emoncms feeds in the UI, with stale value detection
 - Control parameters (thermostat hysteresis, Min mode curve, hot water, frost protection) tunable in the UI
