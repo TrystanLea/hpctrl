@@ -6,7 +6,7 @@ import datetime
 import math
 import logging
 
-logging.basicConfig(filename='/home/pi/hpctrl.log', level=logging.DEBUG, format='%(asctime)s %(message)s')
+logging.basicConfig(filename='/var/log/emoncms/hpctrl.log', level=logging.ERROR, format='%(asctime)s %(message)s')
 
 frost_protection_temperature = 4.0
 
@@ -28,7 +28,7 @@ config = {
 hp = {'roomT':0,'flowT':False,'returnT':False,'cyl_top':0,'cyl_bot':0,'flowrate':False,'ambient':False,'extpipe':0}
 
 def log(message):
-    # print(message)
+    print(message)
     logging.debug(message)
 
 # -----------------------------------------------------
@@ -69,6 +69,12 @@ time_since_heating_start = 0
 frost_protection_state = 0
 frost_protection_timer = 0
 
+# Cascade PI controller state
+pi_ITerm_outer = 0.0
+pi_last_time = time.time()
+pi_Kp_outer = 5.0
+pi_Ki_outer = 0.1
+
 first_run = True
 
 dhw_complete = 0
@@ -89,13 +95,13 @@ while 1:
         x = r.get('hpmon5:cyl_top')
         if x: hp['cyl_top'] = float(x.decode())
 
-        x = r.get('hpmon5:sontex_FlowT')
+        x = r.get('axioma:axioma_FlowT')
         if x: hp['flowT'] = float(x.decode())
         
-        x = r.get('hpmon5:sontex_ReturnT')
+        x = r.get('axioma:axioma_ReturnT')
         if x: hp['returnT'] = float(x.decode())
 
-        x = r.get('hpmon5:sontex_FlowRate')
+        x = r.get('axioma:axioma_FlowRate')
         if x: hp['flowrate'] = float(x.decode())
 
         x = r.get('hpmon5:ambient')
@@ -235,12 +241,47 @@ while 1:
                                     last_flowT_target = flowT_target
 
                             # if (time.time()-time_since_heating_start)>900:
-                            flowT_target = math.ceil(flowT_target)
+                            flowT_target = math.ceil(flowT_target*0.5)*2
 
                             
                             if flowT_target>heating['flowT']: flowT_target = heating['flowT']
                         else:
                             flowT_target = heating['flowT']
+                            """
+                            # Cascade PI: room temperature error -> flow temperature target
+                            pi_timestep = time.time() - pi_last_time
+                            pi_last_time = time.time()
+
+                            cascade_flowT_min = 25
+                            ctrl_cascade_outer_max_flowT = 40
+                            pi_Kp_outer = 3.0
+                            pi_Ki_outer = 0.002
+
+                            error_outer = heating['set_point'] - hp['roomT']
+                            pi_ITerm_outer += error_outer * pi_timestep
+
+                            # Clamp ITerm so flow temp target stays within [setpoint, max_flowT]
+                            if pi_Ki_outer > 0:
+                                max_ITerm_outer = (ctrl_cascade_outer_max_flowT - cascade_flowT_min) / pi_Ki_outer
+                                if pi_ITerm_outer > max_ITerm_outer:
+                                    pi_ITerm_outer = max_ITerm_outer
+                            if pi_ITerm_outer < 0:
+                                pi_ITerm_outer = 0
+
+                            cascade_flowT_target = (cascade_flowT_min
+                                + pi_Kp_outer * error_outer
+                                + pi_Ki_outer * pi_ITerm_outer)
+
+                            # Clamp flow temp target to reasonable bounds
+                            if cascade_flowT_target < cascade_flowT_min:
+                                cascade_flowT_target = cascade_flowT_min
+                            if cascade_flowT_target > ctrl_cascade_outer_max_flowT:
+                                cascade_flowT_target = ctrl_cascade_outer_max_flowT
+
+                            flowT_target = cascade_flowT_target
+                            log("PI cascade flowT target: %.1f (error: %.2f, ITerm: %.2f)" % (flowT_target, error_outer, pi_ITerm_outer))
+                            """
+
                             
                         log("SH flow target: %.1f" % flowT_target)
                         r.set("hpctrl:temp",flowT_target)
@@ -279,10 +320,11 @@ while 1:
                 else:
                     log("DHW heat up complete")
                     r.set("hpctrl:temp",20.0)                               # 1. Turn heat off
-                    r.set("hpctrl:ac1",0)                                   # 2. Turn pump off
-                    time.sleep(25)
-                    r.set("hpctrl:r1",0)                                    # 3. Turn DHW relay off
-                    time.sleep(25)
+                    time.sleep(20)
+                    r.set("hpctrl:r1",0)                                   # 2. Turn pump off
+                    time.sleep(10)
+                    r.set("hpctrl:ac1",0)                                    # 3. Turn DHW relay off
+                    time.sleep(10)
                     state = 0
                         
                     # Switch mode back to heating

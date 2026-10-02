@@ -2,11 +2,13 @@
 defined('EMONCMS_EXEC') or die('Restricted access');
 global $path; 
 $v=3; 
+    
+load_js("Lib/js/vue.global.prod-3.5.22.min.js");
+load_css("Modules/hpctrl/style.css");
 ?>
-<script src="<?php echo $path; ?>Lib/vue.min.js"></script>
-<link href="<?php echo $path; ?>Modules/hpctrl/style.css?v=<?php echo $v; ?>" rel="stylesheet">
     
 <style>
+
 #live td {
   text-align:center;
   width:25%;
@@ -46,15 +48,15 @@ $v=3;
     <div class="set_point_ctrl"><button @click="dec_set_point">-</button></div>
     <div class="set_point">{{ config.heating[active_period].set_point }}</div>
     <div class="set_point_ctrl"><button @click="inc_set_point">+</button></div>
-    <div class="room_temperature">Temperature: {{ room_temperature | toFixed(1) }}&#8451;</div>
+    <div class="room_temperature">Temperature: {{ toFixed(room_temperature,1) }}&#8451;</div>
   </div>
   
   <table id="live" class="table">
     <tr>
-      <td><b>Flow</b><br>{{ flow_temperature | toFixed(1) }}&#8451;</td>
-      <td><b>Outside</b><br>{{ outside_temperature | toFixed(1) }}&#8451;</td>
-      <td><b>Elec</b><br>{{ heatpump_elec | toFixed(0) }}W</td>
-      <td><b>Heat</b><br>{{ heatpump_heat | toFixed(0) }}W</td>
+    <td><b>Flow</b><br>{{ toFixed(flow_temperature,1) }}&#8451;</td>
+    <td><b>Outside</b><br>{{ toFixed(outside_temperature,1) }}&#8451;</td>
+    <td><b>Elec</b><br>{{ toFixed(heatpump_elec,0) }}W</td>
+    <td><b>Heat</b><br>{{ toFixed(heatpump_heat,0) }}W</td>
     </tr>
   </table>
   
@@ -119,34 +121,33 @@ $.ajax({ url: path+"hpctrl/get-config", dataType: 'json', success: function(resu
         if (config.heating.length==0) config.heating[0] = {"start":"0000","set_point":5,"flowT":20.0,"mode":"min"};
     }
     
-    app = new Vue({
-        el: '#app',
-        data: {
-            config:config,
-            
-            time: '',
-            current_set_point: 18.0,
-            
-            active_period: 0,
-            
-            room_temperature:'',
-            flow_temperature:'',
-            outside_temperature:'',
-            heatpump_elec:'',
-            heatpump_heat:'',
-            heatpump_cop:0
-        },
-        filters: {
-           toFixed: function(val,dp) {
-               if (!isNaN(val)) {
-                   val = val * 1;
-                   return val.toFixed(1)
-               } else {
-                   return val
-               }
-           }
+    app = Vue.createApp({
+        data: function() {
+            return {
+                config:config,
+                
+                time: '',
+                current_set_point: 18.0,
+                
+                active_period: 0,
+                
+                room_temperature:'',
+                flow_temperature:'',
+                outside_temperature:'',
+                heatpump_elec:'',
+                heatpump_heat:'',
+                heatpump_cop:0
+            }
         },
         methods: {
+            toFixed: function(val,dp) {
+                if (!isNaN(val)) {
+                    val = val * 1;
+                    return val.toFixed(dp)
+                } else {
+                    return val
+                }
+            },
             save: function() {
                 $.ajax({ method: "POST", url: path+"hpctrl/set-config", data:"config="+JSON.stringify(config), dataType: 'json', async: false, success: function(result){
                     if (result.success!=undefined && result.success) {
@@ -203,7 +204,7 @@ $.ajax({ url: path+"hpctrl/get-config", dataType: 'json', success: function(resu
                 save_inst = setTimeout(function() {app.save()},2000); 
             }
         }
-    });
+    }).mount('#app');
     update();
 }});
 
@@ -220,8 +221,8 @@ function update(){
                 feeds_by_name[feeds[z].name] = feeds[z]
             }
             
-            if (feeds_by_name['livingroom_temperature']!=undefined) {
-                app.room_temperature = feeds_by_name['livingroom_temperature'].value;
+            if (feeds_by_name['Diningroom_2']!=undefined) {
+                app.room_temperature = feeds_by_name['Diningroom_2'].value;
             }
             if (feeds_by_name['heatpump_flowT']!=undefined) {
                 app.flow_temperature = feeds_by_name['heatpump_flowT'].value;

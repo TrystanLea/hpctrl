@@ -7,7 +7,7 @@ class CN105:
     last_power = -1
 
     def __init__(self,port,baud,control_enabled=True):
-        self.ser = serial.Serial("/dev/ecodan", 2400, 8, 'E', 1, 0.5)
+        self.ser = serial.Serial("/dev/serial/by-id/usb-Silicon_Labs_CP2102_USB_to_UART_Bridge_Controller_0001-if00-port0", 2400, 8, 'E', 1, 0.5)
         self.control_enabled = control_enabled
             
     def calc_checksum(self,frame):

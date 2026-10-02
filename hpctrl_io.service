@@ -1,0 +1,26 @@
+# sudo ln -s /opt/emoncms/modules/hpctrl/hpctrl_io.service /lib/systemd/system
+# sudo systemctl daemon-reload
+# sudo systemctl enable hpctrl_io.service
+
+[Unit]
+Description=hpctrl_io service
+StartLimitIntervalSec=5
+
+[Service]
+Type=simple
+ExecStart=/usr/bin/python3 /opt/emoncms/modules/hpctrl/hpctrl_io.py
+User=pi
+
+# Restart script if stopped
+Restart=always
+# Wait 30s before restart
+RestartSec=30s
+
+# Tag things in the log
+# If you want to use the journal instead of the file above, uncomment SyslogIdentifier below
+# View with: sudo journalctl -f -u hpctrl_io -o cat
+SyslogIdentifier=hpctrl_io
+
+[Install]
+WantedBy=multi-user.target
+

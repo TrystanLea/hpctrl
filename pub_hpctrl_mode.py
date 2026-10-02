@@ -7,9 +7,9 @@ import logging
 import traceback
 
 logging.basicConfig(handlers=[
-    logging.FileHandler("/home/pi/hpctrl_mqtt.log"),
+    logging.FileHandler("/var/log/emoncms/hpctrl_mqtt.log"),
     logging.StreamHandler()
-], level=logging.DEBUG, format='%(asctime)s %(message)s')
+], level=logging.ERROR, format='%(asctime)s %(message)s')
 
 r = redis.Redis()
 
@@ -18,7 +18,7 @@ r = redis.Redis()
 # ------------------------------------------------------
 mqtt_user = "emonpi"
 mqtt_passwd = "emonpimqtt2016"
-mqtt_host = "192.168.1.211"
+mqtt_host = "127.0.0.1"
 mqtt_port = 1883
 mqtt_topic = "emon/#"
 
@@ -28,7 +28,7 @@ def on_message(client, userdata, msg):
     if msg.topic=="hpctrl/config":
         config = json.loads(msg.payload)
         r.set('hpctrl:config',msg.payload)
-    if msg.topic=="emon/emonth2_23/temperature":
+    if msg.topic=="emon/emonth2_21/temperature":
         roomT = round(float(msg.payload),2)
         r.set('hpmon5:roomT',roomT)
         r.expire('hpmon5:roomT',1800)
@@ -38,7 +38,7 @@ def on_connect(client, userdata, flags, rc):
     mqtt_connected = 1
     logging.debug("MQTT Connected")
     mqttc.subscribe("hpctrl/config")
-    mqttc.subscribe("emon/emonth2_23/temperature") # Livingroom temperature
+    mqttc.subscribe("emon/emonth2_21/temperature") # Livingroom temperature
     
 def on_disconnect(client, userdata, rc):
     global mqtt_connected
