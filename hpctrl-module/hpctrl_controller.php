@@ -26,7 +26,7 @@ function hpctrl_controller()
     if ($route->action == '' && $session['write']) {
         require "Modules/hpctrl/hpctrl_model.php";
         $hpctrl = new HPCtrl($mysqli);
-        return view("Modules/hpctrl/view.php",array(
+        return view("Modules/hpctrl/Views/hpctrl_view.php",array(
             'dhw_enable'=>$dhw_enable,
             'settings'=>$hpctrl->get_settings($session['userid'])
         ));
