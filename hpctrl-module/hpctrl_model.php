@@ -43,6 +43,42 @@ class HPCtrl
         return true;
     }
     
+    // UI settings: feed ids for live values and the dial range
+    private $setting_keys = array('room','flow','outside','elec','heat','dial_min','dial_max','dial_step');
+
+    public function set_settings($userid,$settings)
+    {
+        $userid = (int) $userid;
+        $clean = array();
+        foreach ($this->setting_keys as $key) {
+            if (isset($settings->$key) && is_numeric($settings->$key)) $clean[$key] = $settings->$key + 0;
+        }
+        $settings = json_encode($clean);
+
+        if (!$result = $this->mysqli->query("SELECT userid FROM hpctrl WHERE `userid`='$userid'")) {
+            return false;
+        }
+        if ($result->num_rows) {
+            $stmt = $this->mysqli->prepare("UPDATE hpctrl SET `settings`=? WHERE `userid`=?");
+            $stmt->bind_param("si", $settings, $userid);
+        } else {
+            $stmt = $this->mysqli->prepare("INSERT INTO hpctrl ( userid, settings ) VALUES (?,?)");
+            $stmt->bind_param("is", $userid, $settings);
+        }
+        return $stmt->execute();
+    }
+
+    public function get_settings($userid)
+    {
+        $userid = (int) $userid;
+        if ($result = $this->mysqli->query("SELECT settings FROM hpctrl WHERE `userid`='$userid'")) {
+            if ($row = $result->fetch_array()) {
+                if ($settings = json_decode((string) $row['settings'])) return $settings;
+            }
+        }
+        return new stdClass();
+    }
+
     public function get($userid)
     {
         $userid = (int) $userid;

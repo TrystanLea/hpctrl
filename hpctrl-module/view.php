@@ -9,7 +9,8 @@ load_css("Modules/hpctrl/style.css");
 
 <div class="app-page hp-page" data-bs-theme="dark">
 <section id="app-block" class="block">
-<div id="hpctrl" class="hp-grid" v-cloak>
+<div id="hpctrl" v-cloak>
+<div class="hp-grid" v-if="view=='control'">
 
   <!-- Thermostat -->
   <div class="app-card hp-thermostat">
@@ -20,6 +21,9 @@ load_css("Modules/hpctrl/style.css");
       <div class="app-card-tools">
         <span class="hp-save" :class="'is-'+save_state" v-if="save_state">{{ save_text }}</span>
         <span class="app-status" :class="{ 'is-live': live }"><span class="app-status-dot"></span><span class="app-status-text">{{ clock }}</span></span>
+        <div class="nav">
+          <button class="nav-link" title="Settings" @click="open_settings"><i class="svg-icon-wrench"></i></button>
+        </div>
       </div>
     </nav>
 
@@ -42,9 +46,9 @@ load_css("Modules/hpctrl/style.css");
       </div>
 
       <button class="hp-step hp-step-down" title="Lower set point"
-              @pointerdown.prevent="step_start(-0.1)" @pointerup="step_end" @pointerleave="step_end" @keydown.enter.prevent="nudge(-0.1)">&minus;</button>
+              @pointerdown.prevent="step_start(-settings.dial_step)" @pointerup="step_end" @pointerleave="step_end" @keydown.enter.prevent="nudge(-settings.dial_step)">&minus;</button>
       <button class="hp-step hp-step-up" title="Raise set point"
-              @pointerdown.prevent="step_start(0.1)" @pointerup="step_end" @pointerleave="step_end" @keydown.enter.prevent="nudge(0.1)">+</button>
+              @pointerdown.prevent="step_start(settings.dial_step)" @pointerup="step_end" @pointerleave="step_end" @keydown.enter.prevent="nudge(settings.dial_step)">+</button>
     </div>
 
     <div class="hp-period-note">
@@ -89,7 +93,7 @@ load_css("Modules/hpctrl/style.css");
         </div>
         <div class="hp-now" :style="{ left: now_pct+'%' }"></div>
         <template v-if="dhw_enable">
-          <div v-for="run in config.dhw" class="hp-dhw-pin"
+          <div v-for="run in schedule.dhw" class="hp-dhw-pin"
                :style="{ left: minutes(run.start)/14.4+'%' }" :title="'Hot water '+fmt_time(run.start)+'  '+run.T+'°'">
             <i class="svg-icon-shower"></i>
           </div>
@@ -114,7 +118,7 @@ load_css("Modules/hpctrl/style.css");
       <div class="app-card-body">
         <div class="hp-rows">
           <div class="hp-rows-head"><span>Start</span><span>Set &deg;C</span><span>Flow &deg;C</span><span>Mode</span></div>
-          <div v-for="(item,index) in config.heating" :key="index" class="hp-row"
+          <div v-for="(item,index) in schedule.heating" :key="index" class="hp-row"
                :class="{ 'is-active': index==active_index, 'is-focus': index==focus_index }"
                :style="{ '--row': temp_color(item.set_point) }" :ref="el => { if (el) row_els[index] = el }">
             <input type="time" class="form-control form-control-sm" title="Start" @click="open_picker" :value="fmt_time(item.start)" @change="set_start(item,$event)"/>
@@ -124,7 +128,7 @@ load_css("Modules/hpctrl/style.css");
               <button class="btn" :class="{ active: item.mode=='min' }" @click="set_mode(item,'min')" title="Flow temperature follows return temperature, capped at flow">Min</button>
               <button class="btn" :class="{ active: item.mode=='max' }" @click="set_mode(item,'max')" title="Fixed flow temperature">Max</button>
             </div>
-            <button class="hp-row-delete nav-link" title="Delete period" @click="delete_heating(index)" :disabled="config.heating.length<2"><i class="svg-icon-trash"></i></button>
+            <button class="hp-row-delete nav-link" title="Delete period" @click="delete_heating(index)" :disabled="schedule.heating.length<2"><i class="svg-icon-trash"></i></button>
           </div>
         </div>
 
@@ -143,8 +147,8 @@ load_css("Modules/hpctrl/style.css");
       </div>
       <div class="app-card-body">
         <div class="hp-rows">
-          <div class="hp-rows-head" v-if="config.dhw.length"><span>Start</span><span>Target &deg;C</span><span>Flow &deg;C</span><span>Mode</span></div>
-          <div v-for="(item,index) in config.dhw" :key="index" class="hp-row hp-row-dhw">
+          <div class="hp-rows-head" v-if="schedule.dhw.length"><span>Start</span><span>Target &deg;C</span><span>Flow &deg;C</span><span>Mode</span></div>
+          <div v-for="(item,index) in schedule.dhw" :key="index" class="hp-row hp-row-dhw">
             <input type="time" class="form-control form-control-sm" title="Start" @click="open_picker" :value="fmt_time(item.start)" @change="set_start(item,$event)"/>
             <input type="number" step="0.5" class="form-control form-control-sm" title="Target" v-model.number="item.T" @change="save"/>
             <input v-if="item.mode=='max'" type="number" step="0.5" class="form-control form-control-sm" title="Flow temperature" v-model.number="item.flowT" @change="save"/>
@@ -155,12 +159,102 @@ load_css("Modules/hpctrl/style.css");
             </div>
             <button class="hp-row-delete nav-link" title="Delete run" @click="delete_dhw(index)"><i class="svg-icon-trash"></i></button>
           </div>
-          <div v-if="!config.dhw.length" class="hp-empty">No hot water runs</div>
+          <div v-if="!schedule.dhw.length" class="hp-empty">No hot water runs</div>
         </div>
       </div>
     </div>
 
   </div>
+</div>
+
+<!-- Settings -->
+<div class="hp-settings" v-else>
+  <div class="app-card">
+    <nav class="app-card-head">
+      <div class="nav nav-underline">
+        <span class="nav-link active"><i class="svg-icon-wrench"></i>Settings</span>
+      </div>
+      <div class="app-card-tools">
+        <span class="hp-save" :class="'is-'+settings_state" v-if="settings_state">{{ state_label(settings_state) }}</span>
+        <div class="nav">
+          <button class="nav-link" title="Close" @click="close_settings" :disabled="!ready"><i class="svg-icon-close"></i></button>
+        </div>
+      </div>
+    </nav>
+
+    <div class="hp-ready" :class="ready ? 'is-ready' : 'is-missing'">
+      <span class="hp-state-icon"><i :class="ready ? 'svg-icon-check' : 'svg-icon-close'"></i></span>
+      <div class="hp-ready-text">
+        <b>{{ ready ? 'Ready' : 'Choose a room temperature feed' }}</b>
+        <span>{{ feeds_connected }} of {{ feed_defs.length }} feeds connected</span>
+      </div>
+      <div class="hp-ready-bar"><div :style="{ width: (100 * feeds_connected / feed_defs.length) + '%' }"></div></div>
+    </div>
+  </div>
+
+  <div class="app-section-label hp-settings-label">Feeds</div>
+  <div class="app-card">
+    <div v-for="row in feed_rows" :key="row.def.key" class="hp-feed" :class="'is-' + row.state">
+      <span class="hp-state-icon"><i :class="row.def.icon"></i></span>
+      <div class="hp-feed-text">
+        <div class="hp-feed-name">{{ row.def.label }}
+          <span v-if="row.state=='miss'" class="hp-badge is-miss">Required</span>
+          <span v-else-if="row.state=='auto'" class="hp-badge is-auto">Auto</span>
+        </div>
+        <div class="hp-feed-desc">{{ row.def.description }}</div>
+      </div>
+      <div class="hp-feed-pick">
+        <select class="form-select form-select-sm" :value="row.choice" @change="set_feed(row.def.key, $event.target.value)">
+          <option value="auto">Auto ({{ row.def.names.join(', ') }})</option>
+          <option value="0" v-if="!row.def.required">Not used</option>
+          <optgroup v-for="group in feed_groups" :label="group.tag">
+            <option v-for="f in group.feeds" :value="String(f.id)">{{ f.name }}</option>
+          </optgroup>
+        </select>
+        <div class="hp-feed-live" v-if="row.feed">
+          <span class="hp-feed-node">{{ row.feed.tag }}:{{ row.feed.name }}</span>
+          <b>{{ feed_value(row.feed, row.def.unit) }}</b>
+          <span :class="{ 'is-stale': feed_stale(row.feed) }">{{ feed_age(row.feed) }}</span>
+        </div>
+        <div class="hp-feed-live" v-else-if="row.state=='miss'">No feed found by name</div>
+        <div class="hp-feed-live" v-else>Not shown</div>
+      </div>
+    </div>
+  </div>
+
+  <div class="app-section-label hp-settings-label">Dial</div>
+  <div class="app-card hp-dial-settings">
+    <div class="hp-setting">
+      <div class="hp-feed-text">
+        <div class="hp-feed-name">Range</div>
+        <div class="hp-feed-desc">Lowest and highest set point on the dial</div>
+      </div>
+      <div class="hp-range">
+        <div class="input-group input-group-sm">
+          <input type="number" step="1" class="form-control" :value="settings.dial_min" @change="set_dial('dial_min', $event.target.value)"/>
+          <span class="input-group-text">to</span>
+          <input type="number" step="1" class="form-control" :value="settings.dial_max" @change="set_dial('dial_max', $event.target.value)"/>
+          <span class="input-group-text">&deg;C</span>
+        </div>
+        <div class="hp-range-bar" :style="{ background: 'linear-gradient(to right, ' + temp_color(t_min) + ', ' + temp_color((t_min + t_max) / 2) + ', ' + temp_color(t_max) + ')' }"></div>
+      </div>
+    </div>
+    <div class="hp-setting">
+      <div class="hp-feed-text">
+        <div class="hp-feed-name">Step</div>
+        <div class="hp-feed-desc">Change per press of &minus; or +</div>
+      </div>
+      <div class="btn-group btn-group-sm app-segmented">
+        <button v-for="step in [0.1, 0.5, 1]" class="btn" :class="{ active: settings.dial_step == step }" @click="set_dial('dial_step', step)">{{ step }}&deg;</button>
+      </div>
+    </div>
+  </div>
+
+  <div class="hp-settings-foot">
+    <button class="btn btn-primary" :disabled="!ready" @click="close_settings"><i class="svg-icon-check"></i> Done</button>
+  </div>
+</div>
+
 </div>
 </section>
 </div>
@@ -168,9 +262,9 @@ load_css("Modules/hpctrl/style.css");
 <script>
 var dhw_enable = <?php echo (isset($dhw_enable) && $dhw_enable) ? 'true' : 'false'; ?>;
 
-// Dial range and colour scale
-var T_MIN = 5;
-var T_MAX = 25;
+var settings = <?php echo json_encode($settings); ?>;
+
+// Colour scale, fixed in degrees so a colour always means the same temperature
 var TICKS = 90;
 var COLOR_STOPS = [
     [5,    [61, 120, 216]],
@@ -182,14 +276,21 @@ var COLOR_STOPS = [
     [25,   [217, 67, 104]]
 ];
 
-// Feed names for live values
-var FEEDS = {
-    room: 'Diningroom_2',
-    flow: 'heatpump_flowT',
-    outside: 'heatpump_ambient',
-    elec: 'heatpump_elec',
-    heat: 'heatpump_heat'
-};
+// Live value feeds. Without a saved choice the first feed found by name is used.
+var FEEDS = [
+    { key: 'room',    label: 'Room temperature',    unit: '°C', required: true, icon: 'svg-icon-home',
+      description: 'Shown on the dial, sets heating or holding', names: ['heatpump_roomT', 'room_temperature', 'roomT'] },
+    { key: 'flow',    label: 'Flow temperature',    unit: '°C', icon: 'svg-icon-radiator',
+      description: 'Heat pump flow temperature', names: ['heatpump_flowT'] },
+    { key: 'outside', label: 'Outside temperature', unit: '°C', icon: 'svg-icon-earth',
+      description: 'Outside or heat pump ambient temperature', names: ['heatpump_outsideT', 'heatpump_ambient'] },
+    { key: 'elec',    label: 'Electric input',      unit: 'W', icon: 'svg-icon-smartmeter',
+      description: 'Heat pump electric power', names: ['heatpump_elec'] },
+    { key: 'heat',    label: 'Heat output',         unit: 'W', icon: 'svg-icon-sun',
+      description: 'Heat pump heat output, with electric input gives COP', names: ['heatpump_heat'] }
+];
+
+var DIAL_DEFAULTS = { dial_min: 5, dial_max: 25, dial_step: 0.1 };
 
 function default_config() {
     return {
@@ -202,29 +303,35 @@ function default_config() {
 }
 
 $.ajax({ url: path + "hpctrl/get-config", dataType: 'json', success: function (result) {
-    var config = result ? result : default_config();
-    if (!config.heating || !config.heating.length) config.heating = default_config().heating;
-    if (!config.dhw) config.dhw = [];
-    start_app(config);
+    var schedule = result ? result : default_config();
+    if (!schedule.heating || !schedule.heating.length) schedule.heating = default_config().heating;
+    if (!schedule.dhw) schedule.dhw = [];
+    start_app(schedule);
 }});
 
-function start_app(config) {
+function start_app(schedule) {
     var save_timer = false;
     var saved_timer = false;
     var step_timer = false;
+    var settings_timer = false;
+
+    if (!settings || Array.isArray(settings)) settings = {};
+    for (var key in DIAL_DEFAULTS) {
+        if (settings[key] === undefined) settings[key] = DIAL_DEFAULTS[key];
+    }
 
     Vue.createApp({
         data: function () {
             return {
-                config: config,
+                schedule: schedule,
+                settings: settings,
+                feed_defs: FEEDS,
+                feeds: [],
+                feeds_loaded: false,
+                view: 'control',
+                settings_state: '',
                 dhw_enable: dhw_enable,
                 now: new Date(),
-                room: false,
-                flow: false,
-                outside: false,
-                elec: false,
-                heat: false,
-                live: false,
                 save_state: '',
                 focus_index: -1,
                 dragging: false,
@@ -232,12 +339,59 @@ function start_app(config) {
             };
         },
         computed: {
+            t_min: function () {
+                return this.settings.dial_min * 1;
+            },
+            t_max: function () {
+                return Math.max(this.settings.dial_max * 1, this.t_min + 1);
+            },
+            feeds_by_id: function () {
+                var out = {};
+                this.feeds.forEach(function (f) { out[f.id] = f; });
+                return out;
+            },
+            // Feed list grouped by node for the pickers
+            feed_groups: function () {
+                var groups = {};
+                this.feeds.forEach(function (f) {
+                    var tag = f.tag || 'No node';
+                    if (!groups[tag]) groups[tag] = [];
+                    groups[tag].push(f);
+                });
+                return Object.keys(groups).sort().map(function (tag) {
+                    return { tag: tag, feeds: groups[tag].sort(function (a, b) { return a.name.localeCompare(b.name); }) };
+                });
+            },
+            feed_rows: function () {
+                var self = this;
+                return FEEDS.map(function (def) {
+                    var choice = self.settings[def.key];
+                    var feed = self.resolve(def);
+                    var state = feed ? (choice === undefined ? 'auto' : 'ok') : (choice === 0 || !def.required ? 'off' : 'miss');
+                    return { def: def, feed: feed, state: state, choice: choice === undefined ? 'auto' : String(choice) };
+                });
+            },
+            feeds_connected: function () {
+                return this.feed_rows.filter(function (r) { return r.feed; }).length;
+            },
+            // Live values, false when no feed or no value
+            room: function () { return this.live_value('room'); },
+            flow: function () { return this.live_value('flow'); },
+            outside: function () { return this.live_value('outside'); },
+            elec: function () { return this.live_value('elec'); },
+            heat: function () { return this.live_value('heat'); },
+            live: function () {
+                return !this.feed_stale(this.resolve(FEEDS[0]));
+            },
+            ready: function () {
+                return !this.feed_rows.some(function (r) { return r.state == 'miss'; });
+            },
             now_minutes: function () {
                 return this.now.getHours() * 60 + this.now.getMinutes();
             },
             // Last period started today, else the last period from yesterday, as hpctrl.py
             active_index: function () {
-                var list = this.config.heating;
+                var list = this.schedule.heating;
                 var index = list.length - 1;
                 for (var i = 0; i < list.length; i++) {
                     if (this.now_minutes >= this.minutes(list[i].start)) index = i;
@@ -245,7 +399,7 @@ function start_app(config) {
                 return index;
             },
             active: function () {
-                return this.config.heating[this.active_index];
+                return this.schedule.heating[this.active_index];
             },
             set_point: function () {
                 return this.active.set_point * 1;
@@ -272,7 +426,7 @@ function start_app(config) {
             ticks: function () {
                 var out = [];
                 for (var i = 0; i < TICKS; i++) {
-                    var t = T_MIN + (T_MAX - T_MIN) * i / (TICKS - 1);
+                    var t = this.t_min + (this.t_max - this.t_min) * i / (TICKS - 1);
                     var lit = t <= this.set_point + 0.01;
                     var warming = this.heating && lit && t > this.room;
                     var p1 = this.polar(this.angle(t), lit ? 114 : 118);
@@ -289,7 +443,7 @@ function start_app(config) {
                 return out;
             },
             next_text: function () {
-                var list = this.config.heating;
+                var list = this.schedule.heating;
                 if (list.length < 2) return 'all day';
                 var next = list[(this.active_index + 1) % list.length];
                 return this.fmt_time(next.start) + ', then ' + (next.set_point * 1).toFixed(1) + '°';
@@ -297,7 +451,7 @@ function start_app(config) {
             // Day profile. Time before the first start belongs to the last period.
             segments: function () {
                 var self = this;
-                var list = this.config.heating;
+                var list = this.schedule.heating;
                 var segs = [];
                 var add = function (index, from, to) {
                     if (to <= from) return;
@@ -305,7 +459,7 @@ function start_app(config) {
                     segs.push({
                         index: index, start: list[index].start, set_point: sp,
                         left: from / 14.4, width: (to - from) / 14.4,
-                        height: 18 + 82 * self.clamp((sp - T_MIN) / (T_MAX - T_MIN), 0, 1),
+                        height: 18 + 82 * self.clamp((sp - self.t_min) / (self.t_max - self.t_min), 0, 1),
                         color: self.temp_color(sp)
                     });
                 };
@@ -327,10 +481,13 @@ function start_app(config) {
                 return this.pad(this.now.getHours()) + ':' + this.pad(this.now.getMinutes());
             },
             save_text: function () {
-                return { saving: 'Saving', saved: 'Saved', error: 'Not saved' }[this.save_state];
+                return this.state_label(this.save_state);
             }
         },
         methods: {
+            state_label: function (state) {
+                return { saving: 'Saving', saved: 'Saved', error: 'Not saved' }[state];
+            },
             pad: function (n) {
                 return String(n).padStart(2, '0');
             },
@@ -350,14 +507,14 @@ function start_app(config) {
                 return s.substr(0, 2) + ':' + s.substr(2, 2);
             },
             angle: function (t) {
-                return 135 + 270 * this.clamp((t - T_MIN) / (T_MAX - T_MIN), 0, 1);
+                return 135 + 270 * this.clamp((t - this.t_min) / (this.t_max - this.t_min), 0, 1);
             },
             polar: function (deg, r) {
                 var a = deg * Math.PI / 180;
                 return { x: 150 + r * Math.cos(a), y: 150 + r * Math.sin(a) };
             },
             temp_color: function (t) {
-                t = this.clamp(t * 1 || 0, T_MIN, T_MAX);
+                t = this.clamp(t * 1 || 0, COLOR_STOPS[0][0], COLOR_STOPS[COLOR_STOPS.length - 1][0]);
                 for (var i = 1; i < COLOR_STOPS.length; i++) {
                     if (t <= COLOR_STOPS[i][0]) {
                         var a = COLOR_STOPS[i - 1], b = COLOR_STOPS[i];
@@ -370,7 +527,7 @@ function start_app(config) {
 
             // Set point
             set_set_point: function (t) {
-                t = Math.round(this.clamp(t, T_MIN, T_MAX) * 10) / 10;
+                t = Math.round(this.clamp(t, this.t_min, this.t_max) * 10) / 10;
                 if (t === this.active.set_point) return;
                 this.active.set_point = t;
                 this.save_later();
@@ -398,7 +555,7 @@ function start_app(config) {
                 var rel = Math.atan2(y, x) * 180 / Math.PI - 135;
                 while (rel < 0) rel += 360;
                 if (rel > 270) rel = rel > 315 ? 0 : 270;
-                return { t: T_MIN + (T_MAX - T_MIN) * rel / 270, r: Math.sqrt(x * x + y * y) };
+                return { t: this.t_min + (this.t_max - this.t_min) * rel / 270, r: Math.sqrt(x * x + y * y) };
             },
             drag_start: function (e) {
                 var p = this.pointer_temp(e);
@@ -433,7 +590,7 @@ function start_app(config) {
                 this.save();
             },
             add_heating: function () {
-                var list = this.config.heating;
+                var list = this.schedule.heating;
                 var last = JSON.parse(JSON.stringify(list[list.length - 1]));
                 var m = Math.min(this.minutes(last.start) + 60, 23 * 60 + 59);
                 last.start = this.pad(Math.floor(m / 60)) + this.pad(m % 60);
@@ -442,18 +599,18 @@ function start_app(config) {
                 this.focus_row(list.length - 1);
             },
             delete_heating: function (index) {
-                if (this.config.heating.length < 2) return;
-                this.config.heating.splice(index, 1);
+                if (this.schedule.heating.length < 2) return;
+                this.schedule.heating.splice(index, 1);
                 this.save();
             },
             add_dhw: function () {
-                var list = this.config.dhw;
+                var list = this.schedule.dhw;
                 if (list.length) list.push(JSON.parse(JSON.stringify(list[list.length - 1])));
                 else list.push({ start: "0700", T: 40.0, flowT: "auto", mode: "min" });
                 this.save();
             },
             delete_dhw: function (index) {
-                this.config.dhw.splice(index, 1);
+                this.schedule.dhw.splice(index, 1);
                 this.save();
             },
             focus_row: function (index) {
@@ -470,8 +627,8 @@ function start_app(config) {
             sort: function () {
                 var self = this;
                 var by_start = function (a, b) { return self.minutes(a.start) - self.minutes(b.start); };
-                this.config.heating.sort(by_start);
-                this.config.dhw.sort(by_start);
+                this.schedule.heating.sort(by_start);
+                this.schedule.dhw.sort(by_start);
             },
             save_later: function () {
                 var self = this;
@@ -485,7 +642,7 @@ function start_app(config) {
                 this.save_state = 'saving';
                 $.ajax({
                     method: "POST", url: path + "hpctrl/set-config", dataType: 'json',
-                    data: { config: JSON.stringify(this.config) },
+                    data: { config: JSON.stringify(this.schedule) },
                     success: function (result) {
                         self.save_state = (result && result.success) ? 'saved' : 'error';
                     },
@@ -501,19 +658,87 @@ function start_app(config) {
                 });
             },
 
+            // Settings
+            resolve: function (def) {
+                var choice = this.settings[def.key];
+                if (choice === 0) return false;
+                if (choice !== undefined) return this.feeds_by_id[choice] || false;
+                for (var i = 0; i < def.names.length; i++) {
+                    var match = this.feeds.find(function (f) { return f.name == def.names[i]; });
+                    if (match) return match;
+                }
+                return false;
+            },
+            live_value: function (key) {
+                var f = this.resolve(FEEDS.find(function (d) { return d.key == key; }));
+                return (f && f.value !== null && !isNaN(f.value)) ? f.value * 1 : false;
+            },
+            set_feed: function (key, value) {
+                if (value == 'auto') delete this.settings[key];
+                else this.settings[key] = value * 1;
+                this.save_settings();
+            },
+            set_dial: function (key, value) {
+                value = parseFloat(value);
+                if (isNaN(value)) return;
+                this.settings[key] = value;
+                this.save_settings();
+            },
+            feed_value: function (feed, unit) {
+                if (!feed || feed.value === null || isNaN(feed.value)) return '--';
+                return (feed.value * 1).toFixed(unit == 'W' ? 0 : 1) + (unit == 'W' ? ' W' : '°C');
+            },
+            feed_age: function (feed) {
+                if (!feed || !feed.time) return '';
+                var s = Math.max(0, Math.round(this.now.getTime() / 1000 - feed.time));
+                if (s < 60) return s + 's ago';
+                if (s < 3600) return Math.round(s / 60) + ' min ago';
+                if (s < 86400) return Math.round(s / 3600) + ' h ago';
+                return Math.round(s / 86400) + ' days ago';
+            },
+            feed_stale: function (feed) {
+                return !feed || this.now.getTime() / 1000 - feed.time > 300;
+            },
+            save_settings: function () {
+                var self = this;
+                this.settings_state = 'saving';
+                $.ajax({
+                    method: "POST", url: path + "hpctrl/set-settings", dataType: 'json',
+                    data: { settings: JSON.stringify(this.settings) },
+                    success: function (result) {
+                        self.settings_state = (result && result.success) ? 'saved' : 'error';
+                    },
+                    error: function () {
+                        self.settings_state = 'error';
+                    },
+                    complete: function () {
+                        clearTimeout(settings_timer);
+                        if (self.settings_state == 'saved') {
+                            settings_timer = setTimeout(function () { self.settings_state = ''; }, 2500);
+                        }
+                    }
+                });
+            },
+            open_settings: function () {
+                this.view = 'settings';
+                window.scrollTo(0, 0);
+            },
+            close_settings: function () {
+                if (!this.ready) return;
+                this.view = 'control';
+                window.scrollTo(0, 0);
+            },
+
             // Live values
             update: function () {
                 var self = this;
                 this.now = new Date();
-                $.ajax({ url: path + "feed/list.json", dataType: 'json', success: function (feeds) {
-                    var by_name = {};
-                    for (var z in feeds) by_name[feeds[z].name] = feeds[z];
-                    for (var key in FEEDS) {
-                        var f = by_name[FEEDS[key]];
-                        self[key] = (f && f.value !== null && !isNaN(f.value)) ? f.value * 1 : false;
-                    }
-                    var room = by_name[FEEDS.room];
-                    self.live = !!(room && Date.now() / 1000 - room.time < 300);
+                $.ajax({ url: path + "feed/list.json", dataType: 'json', cache: false, success: function (feeds) {
+                    if (!Array.isArray(feeds)) return;
+                    self.feeds = feeds;
+                    // First visit without a room feed: open settings
+                    if (!self.feeds_loaded && !self.ready) self.view = 'settings';
+                    self.feeds_loaded = true;
                 }});
             }
         },

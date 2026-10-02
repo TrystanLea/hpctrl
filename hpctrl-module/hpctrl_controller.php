@@ -24,7 +24,12 @@ function hpctrl_controller()
     if (!in_array($session['userid'],$hpctrl_users)) return false;
     
     if ($route->action == '' && $session['write']) {
-        return view("Modules/hpctrl/view.php",array('dhw_enable'=>$dhw_enable));
+        require "Modules/hpctrl/hpctrl_model.php";
+        $hpctrl = new HPCtrl($mysqli);
+        return view("Modules/hpctrl/view.php",array(
+            'dhw_enable'=>$dhw_enable,
+            'settings'=>$hpctrl->get_settings($session['userid'])
+        ));
     }
 
     if ($route->action == 'get-config' && $session['read']) {
@@ -32,6 +37,15 @@ function hpctrl_controller()
         require "Modules/hpctrl/hpctrl_model.php";
         $hpctrl = new HPCtrl($mysqli);
         return $hpctrl->get($session['userid']);
+    }
+
+    if ($route->action == 'set-settings' && $session['write']) {
+        $route->format = "json";
+        $settings = json_decode(post('settings'));
+        if (!is_object($settings)) return array("success"=>false, "message"=>"Invalid settings");
+        require "Modules/hpctrl/hpctrl_model.php";
+        $hpctrl = new HPCtrl($mysqli);
+        return array("success"=>$hpctrl->set_settings($session['userid'],$settings));
     }
 
     if ($route->action == 'set-config' && $session['write']) {
